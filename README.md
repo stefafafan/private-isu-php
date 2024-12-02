@@ -17,7 +17,7 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
 ## やりたいことメモ
 - 他言語と同じような改善をする
 - JIT有効化
-- FPMやめる
+- FPMやめて、RoadRunnerへ移行する
 
 ## 参考資料
 
@@ -31,3 +31,4 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
 - [Reli を使った PHP 7.x/8.x サービスの計測｜技術ブログ｜北海道札幌市・宮城県仙台市のVR・ゲーム・システム開発 インフィニットループ](https://www.infiniteloop.co.jp/tech-blog/2023/03/profiling-php8-using-reli/)
   - [GitHub - reliforp/reli-prof](https://github.com/reliforp/reli-prof)
 - [private-isuをdockerでやってみた時のメモ](https://zenn.dev/eichisanden/scraps/7798c55153787b)
+- [RoadRunnerの世界 〜 Yet Another Alt PHP-FPM - Speaker Deck](https://speakerdeck.com/n1215/roadrunnerfalseshi-jie-yet-another-alt-php-fpm)
