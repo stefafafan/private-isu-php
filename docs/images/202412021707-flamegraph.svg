@@ -1,0 +1,3676 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="582" onload="init(evt)" viewBox="0 0 1200 582" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+	}
+
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom();
+			zoom(target);
+		}
+		else if (e.target.id == "unzoom") unzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+	}, false)
+
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+		return;
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		// Fit in full text width
+		if (/^ *$/.test(txt) || t.getSubStringLength(0, txt.length) < w)
+			return;
+
+		for (var x = txt.length - 2; x > 0; x--) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom() {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			update_text(el[i]);
+		}
+		search();
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) {
+				currentSearchTerm = term;
+				search();
+			}
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (currentSearchTerm === null) return;
+		var term = currentSearchTerm;
+
+		var re = new RegExp(term, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="582.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="565" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="565" > </text>
+<g id="frames">
+<g >
+<title>call_user_func_array (39 samples, 0.14%)</title><rect x="903.9" y="133" width="1.7" height="15.0" fill="rgb(246,218,43)" rx="2" ry="2" />
+<text  x="906.91" y="143.5" ></text>
+</g>
+<g >
+<title>DI\Container::setDefinition (4 samples, 0.01%)</title><rect x="17.5" y="485" width="0.1" height="15.0" fill="rgb(227,40,8)" rx="2" ry="2" />
+<text  x="20.46" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (5 samples, 0.02%)</title><rect x="1109.3" y="293" width="0.2" height="15.0" fill="rgb(218,85,31)" rx="2" ry="2" />
+<text  x="1112.33" y="303.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (15 samples, 0.05%)</title><rect x="1114.6" y="325" width="0.7" height="15.0" fill="rgb(254,145,51)" rx="2" ry="2" />
+<text  x="1117.64" y="335.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:403-420) (517 samples, 1.89%)</title><rect x="939.2" y="357" width="22.3" height="15.0" fill="rgb(240,132,43)" rx="2" ry="2" />
+<text  x="942.15" y="367.5" >C..</text>
+</g>
+<g >
+<title>PDO::__construct (7 samples, 0.03%)</title><rect x="597.2" y="229" width="0.3" height="15.0" fill="rgb(230,152,23)" rx="2" ry="2" />
+<text  x="600.15" y="239.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (3 samples, 0.01%)</title><rect x="193.7" y="277" width="0.2" height="15.0" fill="rgb(246,43,21)" rx="2" ry="2" />
+<text  x="196.73" y="287.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="1136.9" y="341" width="0.1" height="15.0" fill="rgb(227,171,37)" rx="2" ry="2" />
+<text  x="1139.90" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (3 samples, 0.01%)</title><rect x="15.1" y="421" width="0.1" height="15.0" fill="rgb(223,76,54)" rx="2" ry="2" />
+<text  x="18.09" y="431.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::validateHeaderValue (8 samples, 0.03%)</title><rect x="1118.5" y="357" width="0.4" height="15.0" fill="rgb(214,222,41)" rx="2" ry="2" />
+<text  x="1121.52" y="367.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (611 samples, 2.23%)</title><rect x="196.5" y="213" width="26.3" height="15.0" fill="rgb(205,27,4)" rx="2" ry="2" />
+<text  x="199.49" y="223.5" >D..</text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (17 samples, 0.06%)</title><rect x="1135.1" y="453" width="0.8" height="15.0" fill="rgb(228,184,47)" rx="2" ry="2" />
+<text  x="1138.13" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="25.9" y="261" width="0.1" height="15.0" fill="rgb(223,152,39)" rx="2" ry="2" />
+<text  x="28.87" y="271.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (16 samples, 0.06%)</title><rect x="959.0" y="277" width="0.6" height="15.0" fill="rgb(218,95,31)" rx="2" ry="2" />
+<text  x="961.95" y="287.5" ></text>
+</g>
+<g >
+<title>file_exists (6 samples, 0.02%)</title><rect x="1134.9" y="421" width="0.2" height="15.0" fill="rgb(221,177,46)" rx="2" ry="2" />
+<text  x="1137.87" y="431.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (190 samples, 0.69%)</title><rect x="939.7" y="133" width="8.2" height="15.0" fill="rgb(212,127,22)" rx="2" ry="2" />
+<text  x="942.71" y="143.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (6 samples, 0.02%)</title><rect x="1132.8" y="421" width="0.2" height="15.0" fill="rgb(251,191,18)" rx="2" ry="2" />
+<text  x="1135.76" y="431.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (37 samples, 0.14%)</title><rect x="232.6" y="325" width="1.6" height="15.0" fill="rgb(241,175,38)" rx="2" ry="2" />
+<text  x="235.59" y="335.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (3 samples, 0.01%)</title><rect x="193.7" y="245" width="0.2" height="15.0" fill="rgb(242,99,8)" rx="2" ry="2" />
+<text  x="196.73" y="255.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (33 samples, 0.12%)</title><rect x="23.3" y="309" width="1.5" height="15.0" fill="rgb(247,49,6)" rx="2" ry="2" />
+<text  x="26.33" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (42 samples, 0.15%)</title><rect x="903.8" y="309" width="1.8" height="15.0" fill="rgb(236,96,23)" rx="2" ry="2" />
+<text  x="906.82" y="319.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (16 samples, 0.06%)</title><rect x="959.0" y="133" width="0.6" height="15.0" fill="rgb(221,38,25)" rx="2" ry="2" />
+<text  x="961.95" y="143.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (4 samples, 0.01%)</title><rect x="196.9" y="53" width="0.2" height="15.0" fill="rgb(234,153,5)" rx="2" ry="2" />
+<text  x="199.92" y="63.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (15 samples, 0.05%)</title><rect x="839.1" y="277" width="0.7" height="15.0" fill="rgb(231,31,15)" rx="2" ry="2" />
+<text  x="842.11" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\ResponseEmitter::emitBody (153 samples, 0.56%)</title><rect x="1122.3" y="469" width="6.6" height="15.0" fill="rgb(214,186,10)" rx="2" ry="2" />
+<text  x="1125.27" y="479.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (10 samples, 0.04%)</title><rect x="1116.2" y="421" width="0.5" height="15.0" fill="rgb(253,133,8)" rx="2" ry="2" />
+<text  x="1119.23" y="431.5" ></text>
+</g>
+<g >
+<title>Slim\ResponseEmitter::emit (168 samples, 0.61%)</title><rect x="1122.2" y="485" width="7.2" height="15.0" fill="rgb(227,152,53)" rx="2" ry="2" />
+<text  x="1125.19" y="495.5" ></text>
+</g>
+<g >
+<title>class@anonymous::get_session_user (5 samples, 0.02%)</title><rect x="970.1" y="341" width="0.2" height="15.0" fill="rgb(245,67,8)" rx="2" ry="2" />
+<text  x="973.08" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (20 samples, 0.07%)</title><rect x="1130.0" y="485" width="0.8" height="15.0" fill="rgb(208,222,44)" rx="2" ry="2" />
+<text  x="1132.95" y="495.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (40 samples, 0.15%)</title><rect x="970.4" y="261" width="1.7" height="15.0" fill="rgb(236,21,18)" rx="2" ry="2" />
+<text  x="973.38" y="271.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (65 samples, 0.24%)</title><rect x="594.7" y="341" width="2.8" height="15.0" fill="rgb(250,175,8)" rx="2" ry="2" />
+<text  x="597.65" y="351.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (5 samples, 0.02%)</title><rect x="1121.5" y="405" width="0.2" height="15.0" fill="rgb(205,180,51)" rx="2" ry="2" />
+<text  x="1124.45" y="415.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (63 samples, 0.23%)</title><rect x="1104.5" y="325" width="2.7" height="15.0" fill="rgb(231,158,18)" rx="2" ry="2" />
+<text  x="1107.50" y="335.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (2,708 samples, 9.90%)</title><rect x="236.6" y="325" width="116.8" height="15.0" fill="rgb(244,156,26)" rx="2" ry="2" />
+<text  x="239.60" y="335.5" >PDOStatement::..</text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (7 samples, 0.03%)</title><rect x="597.2" y="309" width="0.3" height="15.0" fill="rgb(250,92,4)" rx="2" ry="2" />
+<text  x="600.15" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (5 samples, 0.02%)</title><rect x="1136.0" y="421" width="0.2" height="15.0" fill="rgb(251,195,16)" rx="2" ry="2" />
+<text  x="1138.99" y="431.5" ></text>
+</g>
+<g >
+<title>file_exists (4 samples, 0.01%)</title><rect x="19.2" y="389" width="0.2" height="15.0" fill="rgb(253,149,4)" rx="2" ry="2" />
+<text  x="22.23" y="399.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (204 samples, 0.75%)</title><rect x="939.2" y="309" width="8.8" height="15.0" fill="rgb(247,19,53)" rx="2" ry="2" />
+<text  x="942.19" y="319.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (18 samples, 0.07%)</title><rect x="24.0" y="277" width="0.8" height="15.0" fill="rgb(232,159,31)" rx="2" ry="2" />
+<text  x="26.98" y="287.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (3 samples, 0.01%)</title><rect x="870.1" y="309" width="0.1" height="15.0" fill="rgb(236,196,20)" rx="2" ry="2" />
+<text  x="873.09" y="319.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (6 samples, 0.02%)</title><rect x="1134.4" y="421" width="0.3" height="15.0" fill="rgb(229,45,34)" rx="2" ry="2" />
+<text  x="1137.44" y="431.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (7 samples, 0.03%)</title><rect x="597.2" y="261" width="0.3" height="15.0" fill="rgb(224,119,42)" rx="2" ry="2" />
+<text  x="600.15" y="271.5" ></text>
+</g>
+<g >
+<title>file_exists (4 samples, 0.01%)</title><rect x="1130.0" y="437" width="0.1" height="15.0" fill="rgb(208,44,31)" rx="2" ry="2" />
+<text  x="1132.95" y="447.5" ></text>
+</g>
+<g >
+<title>file_exists (6 samples, 0.02%)</title><rect x="15.3" y="421" width="0.3" height="15.0" fill="rgb(248,101,5)" rx="2" ry="2" />
+<text  x="18.31" y="431.5" ></text>
+</g>
+<g >
+<title>all (27,354 samples, 100%)</title><rect x="10.0" y="533" width="1180.0" height="15.0" fill="rgb(243,177,46)" rx="2" ry="2" />
+<text  x="13.00" y="543.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (16 samples, 0.06%)</title><rect x="1130.1" y="469" width="0.7" height="15.0" fill="rgb(209,56,42)" rx="2" ry="2" />
+<text  x="1133.12" y="479.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (1,119 samples, 4.09%)</title><rect x="599.5" y="325" width="48.3" height="15.0" fill="rgb(225,6,40)" rx="2" ry="2" />
+<text  x="602.53" y="335.5" >PDOS..</text>
+</g>
+<g >
+<title>Slim\Middleware\RoutingMiddleware::performRouting (186 samples, 0.68%)</title><rect x="19.9" y="437" width="8.0" height="15.0" fill="rgb(227,72,52)" rx="2" ry="2" />
+<text  x="22.92" y="447.5" ></text>
+</g>
+<g >
+<title>shell_exec (19 samples, 0.07%)</title><rect x="1101.9" y="277" width="0.8" height="15.0" fill="rgb(229,22,2)" rx="2" ry="2" />
+<text  x="1104.91" y="287.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (38 samples, 0.14%)</title><rect x="166.1" y="309" width="1.7" height="15.0" fill="rgb(214,223,51)" rx="2" ry="2" />
+<text  x="169.12" y="319.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:354-401) (822 samples, 3.01%)</title><rect x="903.7" y="357" width="35.5" height="15.0" fill="rgb(248,171,18)" rx="2" ry="2" />
+<text  x="906.69" y="367.5" >Clo..</text>
+</g>
+<g >
+<title>Invoker\Invoker::call (39 samples, 0.14%)</title><rect x="970.4" y="149" width="1.7" height="15.0" fill="rgb(219,122,50)" rx="2" ry="2" />
+<text  x="973.43" y="159.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (10 samples, 0.04%)</title><rect x="1131.8" y="421" width="0.5" height="15.0" fill="rgb(210,82,37)" rx="2" ry="2" />
+<text  x="1134.85" y="431.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (42 samples, 0.15%)</title><rect x="961.5" y="309" width="1.8" height="15.0" fill="rgb(210,156,51)" rx="2" ry="2" />
+<text  x="964.50" y="319.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (78 samples, 0.29%)</title><rect x="32.0" y="261" width="3.4" height="15.0" fill="rgb(248,212,23)" rx="2" ry="2" />
+<text  x="35.00" y="271.5" ></text>
+</g>
+<g >
+<title>preg_match (5 samples, 0.02%)</title><rect x="1118.6" y="341" width="0.3" height="15.0" fill="rgb(247,203,36)" rx="2" ry="2" />
+<text  x="1121.65" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (6 samples, 0.02%)</title><rect x="1014.9" y="213" width="0.3" height="15.0" fill="rgb(227,210,23)" rx="2" ry="2" />
+<text  x="1017.90" y="223.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (5,101 samples, 18.65%)</title><rect x="362.1" y="309" width="220.1" height="15.0" fill="rgb(220,128,43)" rx="2" ry="2" />
+<text  x="365.14" y="319.5" >PDOStatement::execute</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (9 samples, 0.03%)</title><rect x="19.5" y="389" width="0.4" height="15.0" fill="rgb(209,203,29)" rx="2" ry="2" />
+<text  x="22.49" y="399.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (27 samples, 0.10%)</title><rect x="15.7" y="437" width="1.2" height="15.0" fill="rgb(231,216,20)" rx="2" ry="2" />
+<text  x="18.74" y="447.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::protectedIncludeScope (16 samples, 0.06%)</title><rect x="231.8" y="277" width="0.7" height="15.0" fill="rgb(236,123,42)" rx="2" ry="2" />
+<text  x="234.82" y="287.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:307-321) (9 samples, 0.03%)</title><rect x="1110.7" y="469" width="0.4" height="15.0" fill="rgb(242,58,11)" rx="2" ry="2" />
+<text  x="1113.71" y="479.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (7 samples, 0.03%)</title><rect x="1014.9" y="229" width="0.3" height="15.0" fill="rgb(237,178,45)" rx="2" ry="2" />
+<text  x="1017.86" y="239.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (33 samples, 0.12%)</title><rect x="23.3" y="325" width="1.5" height="15.0" fill="rgb(206,178,47)" rx="2" ry="2" />
+<text  x="26.33" y="335.5" ></text>
+</g>
+<g >
+<title>FastRoute\RouteParser\Std::parsePlaceholders (7 samples, 0.03%)</title><rect x="26.8" y="293" width="0.3" height="15.0" fill="rgb(246,52,35)" rx="2" ry="2" />
+<text  x="29.82" y="303.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:335-352) (1,506 samples, 5.51%)</title><rect x="838.7" y="357" width="65.0" height="15.0" fill="rgb(210,119,20)" rx="2" ry="2" />
+<text  x="841.73" y="367.5" >Closure..</text>
+</g>
+<g >
+<title>Slim\Routing\Dispatcher::{closure}(/home/isucon/private_isu/webapp/php/vendor/slim/slim/Slim/Routing/Dispatcher.php:30-36) (93 samples, 0.34%)</title><rect x="1103.6" y="357" width="4.0" height="15.0" fill="rgb(220,186,4)" rx="2" ry="2" />
+<text  x="1106.55" y="367.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (26 samples, 0.10%)</title><rect x="1112.0" y="437" width="1.1" height="15.0" fill="rgb(234,51,23)" rx="2" ry="2" />
+<text  x="1114.96" y="447.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (5,301 samples, 19.38%)</title><rect x="354.0" y="325" width="228.7" height="15.0" fill="rgb(220,78,47)" rx="2" ry="2" />
+<text  x="357.03" y="335.5" >class@anonymous::fetch_first</text>
+</g>
+<g >
+<title>class_exists (6 samples, 0.02%)</title><rect x="1135.9" y="437" width="0.3" height="15.0" fill="rgb(223,162,12)" rx="2" ry="2" />
+<text  x="1138.95" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="24.6" y="165" width="0.2" height="15.0" fill="rgb(224,160,25)" rx="2" ry="2" />
+<text  x="27.62" y="175.5" ></text>
+</g>
+<g >
+<title>DI\Container::getDefinition (3 samples, 0.01%)</title><rect x="35.6" y="325" width="0.2" height="15.0" fill="rgb(254,131,54)" rx="2" ry="2" />
+<text  x="38.62" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="1121.5" y="341" width="0.2" height="15.0" fill="rgb(221,205,10)" rx="2" ry="2" />
+<text  x="1124.50" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer@anonymous::render (5 samples, 0.02%)</title><rect x="1128.7" y="357" width="0.2" height="15.0" fill="rgb(212,50,0)" rx="2" ry="2" />
+<text  x="1131.66" y="367.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (340 samples, 1.24%)</title><rect x="840.0" y="261" width="14.7" height="15.0" fill="rgb(230,52,8)" rx="2" ry="2" />
+<text  x="843.02" y="271.5" ></text>
+</g>
+<g >
+<title>digest (7 samples, 0.03%)</title><rect x="110.2" y="293" width="0.3" height="15.0" fill="rgb(244,153,35)" rx="2" ry="2" />
+<text  x="113.17" y="303.5" ></text>
+</g>
+<g >
+<title>shell_exec (4 samples, 0.01%)</title><rect x="1107.2" y="277" width="0.2" height="15.0" fill="rgb(233,203,7)" rx="2" ry="2" />
+<text  x="1110.22" y="287.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (334 samples, 1.22%)</title><rect x="840.2" y="229" width="14.4" height="15.0" fill="rgb(223,104,9)" rx="2" ry="2" />
+<text  x="843.24" y="239.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (5 samples, 0.02%)</title><rect x="196.9" y="85" width="0.2" height="15.0" fill="rgb(233,74,28)" rx="2" ry="2" />
+<text  x="199.87" y="95.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (273 samples, 1.00%)</title><rect x="582.8" y="325" width="11.8" height="15.0" fill="rgb(212,113,30)" rx="2" ry="2" />
+<text  x="585.83" y="335.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (774 samples, 2.83%)</title><rect x="870.2" y="309" width="33.4" height="15.0" fill="rgb(238,214,11)" rx="2" ry="2" />
+<text  x="873.22" y="319.5" >PD..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (8 samples, 0.03%)</title><rect x="16.5" y="373" width="0.4" height="15.0" fill="rgb(242,185,33)" rx="2" ry="2" />
+<text  x="19.51" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (6 samples, 0.02%)</title><rect x="196.8" y="101" width="0.3" height="15.0" fill="rgb(213,12,34)" rx="2" ry="2" />
+<text  x="199.83" y="111.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="1121.7" y="405" width="0.1" height="15.0" fill="rgb(226,83,50)" rx="2" ry="2" />
+<text  x="1124.67" y="415.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (51 samples, 0.19%)</title><rect x="1113.1" y="437" width="2.2" height="15.0" fill="rgb(250,92,3)" rx="2" ry="2" />
+<text  x="1116.13" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (7 samples, 0.03%)</title><rect x="35.9" y="245" width="0.3" height="15.0" fill="rgb(218,73,37)" rx="2" ry="2" />
+<text  x="38.88" y="255.5" ></text>
+</g>
+<g >
+<title>shell_exec (5 samples, 0.02%)</title><rect x="1090.1" y="293" width="0.3" height="15.0" fill="rgb(244,141,39)" rx="2" ry="2" />
+<text  x="1093.14" y="303.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (4 samples, 0.01%)</title><rect x="24.6" y="229" width="0.2" height="15.0" fill="rgb(235,125,48)" rx="2" ry="2" />
+<text  x="27.58" y="239.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (39 samples, 0.14%)</title><rect x="970.4" y="229" width="1.7" height="15.0" fill="rgb(207,57,0)" rx="2" ry="2" />
+<text  x="973.43" y="239.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (39 samples, 0.14%)</title><rect x="903.9" y="197" width="1.7" height="15.0" fill="rgb(206,179,13)" rx="2" ry="2" />
+<text  x="906.91" y="207.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (40 samples, 0.15%)</title><rect x="970.4" y="277" width="1.7" height="15.0" fill="rgb(242,76,37)" rx="2" ry="2" />
+<text  x="973.38" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteParser::__construct (7 samples, 0.03%)</title><rect x="1133.8" y="437" width="0.3" height="15.0" fill="rgb(212,155,33)" rx="2" ry="2" />
+<text  x="1136.83" y="447.5" ></text>
+</g>
+<g >
+<title>fstat (3 samples, 0.01%)</title><rect x="1115.6" y="389" width="0.2" height="15.0" fill="rgb(252,60,51)" rx="2" ry="2" />
+<text  x="1118.63" y="399.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (5 samples, 0.02%)</title><rect x="970.1" y="309" width="0.2" height="15.0" fill="rgb(244,145,7)" rx="2" ry="2" />
+<text  x="973.08" y="319.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (82 samples, 0.30%)</title><rect x="31.8" y="277" width="3.6" height="15.0" fill="rgb(236,21,44)" rx="2" ry="2" />
+<text  x="34.83" y="287.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="1121.7" y="421" width="0.1" height="15.0" fill="rgb(228,105,11)" rx="2" ry="2" />
+<text  x="1124.67" y="431.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetch (17 samples, 0.06%)</title><rect x="231.8" y="309" width="0.7" height="15.0" fill="rgb(215,226,46)" rx="2" ry="2" />
+<text  x="234.82" y="319.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::createFromGlobals (6 samples, 0.02%)</title><rect x="1120.3" y="453" width="0.3" height="15.0" fill="rgb(208,188,40)" rx="2" ry="2" />
+<text  x="1123.33" y="463.5" ></text>
+</g>
+<g >
+<title>htmlspecialchars (3 samples, 0.01%)</title><rect x="1015.0" y="181" width="0.2" height="15.0" fill="rgb(245,60,26)" rx="2" ry="2" />
+<text  x="1018.03" y="191.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (5 samples, 0.02%)</title><rect x="1135.6" y="373" width="0.2" height="15.0" fill="rgb(244,175,3)" rx="2" ry="2" />
+<text  x="1138.60" y="383.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (16 samples, 0.06%)</title><rect x="959.0" y="101" width="0.6" height="15.0" fill="rgb(215,24,39)" rx="2" ry="2" />
+<text  x="961.95" y="111.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (607 samples, 2.22%)</title><rect x="196.7" y="149" width="26.1" height="15.0" fill="rgb(232,22,52)" rx="2" ry="2" />
+<text  x="199.66" y="159.5" >I..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (8 samples, 0.03%)</title><rect x="14.7" y="469" width="0.3" height="15.0" fill="rgb(254,205,20)" rx="2" ry="2" />
+<text  x="17.70" y="479.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (59 samples, 0.22%)</title><rect x="1091.2" y="325" width="2.6" height="15.0" fill="rgb(225,60,36)" rx="2" ry="2" />
+<text  x="1094.21" y="335.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (56 samples, 0.20%)</title><rect x="645.0" y="309" width="2.4" height="15.0" fill="rgb(211,62,7)" rx="2" ry="2" />
+<text  x="647.99" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (69 samples, 0.25%)</title><rect x="972.3" y="309" width="3.0" height="15.0" fill="rgb(231,13,50)" rx="2" ry="2" />
+<text  x="975.28" y="319.5" ></text>
+</g>
+<g >
+<title>calculate_passhash (10 samples, 0.04%)</title><rect x="1090.1" y="341" width="0.5" height="15.0" fill="rgb(245,191,4)" rx="2" ry="2" />
+<text  x="1093.14" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (8 samples, 0.03%)</title><rect x="1136.7" y="437" width="0.3" height="15.0" fill="rgb(207,101,39)" rx="2" ry="2" />
+<text  x="1139.68" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="1135.6" y="341" width="0.2" height="15.0" fill="rgb(223,40,30)" rx="2" ry="2" />
+<text  x="1138.60" y="351.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (39 samples, 0.14%)</title><rect x="970.4" y="213" width="1.7" height="15.0" fill="rgb(251,74,9)" rx="2" ry="2" />
+<text  x="973.43" y="223.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::addStaticRoute (4 samples, 0.01%)</title><rect x="25.6" y="293" width="0.2" height="15.0" fill="rgb(207,178,25)" rx="2" ry="2" />
+<text  x="28.62" y="303.5" ></text>
+</g>
+<g >
+<title>escape_html (3 samples, 0.01%)</title><rect x="598.1" y="213" width="0.1" height="15.0" fill="rgb(229,111,12)" rx="2" ry="2" />
+<text  x="601.06" y="223.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (190 samples, 0.69%)</title><rect x="939.7" y="149" width="8.2" height="15.0" fill="rgb(245,44,9)" rx="2" ry="2" />
+<text  x="942.71" y="159.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (14 samples, 0.05%)</title><rect x="863.7" y="293" width="0.6" height="15.0" fill="rgb(228,214,2)" rx="2" ry="2" />
+<text  x="866.70" y="303.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (8 samples, 0.03%)</title><rect x="1120.8" y="437" width="0.4" height="15.0" fill="rgb(231,211,48)" rx="2" ry="2" />
+<text  x="1123.81" y="447.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (3 samples, 0.01%)</title><rect x="15.1" y="453" width="0.1" height="15.0" fill="rgb(236,160,2)" rx="2" ry="2" />
+<text  x="18.09" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::write (5 samples, 0.02%)</title><rect x="1128.7" y="325" width="0.2" height="15.0" fill="rgb(254,121,36)" rx="2" ry="2" />
+<text  x="1131.66" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="25.9" y="245" width="0.1" height="15.0" fill="rgb(248,11,39)" rx="2" ry="2" />
+<text  x="28.87" y="255.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (9 samples, 0.03%)</title><rect x="19.5" y="373" width="0.4" height="15.0" fill="rgb(224,33,1)" rx="2" ry="2" />
+<text  x="22.49" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (77 samples, 0.28%)</title><rect x="32.0" y="181" width="3.4" height="15.0" fill="rgb(206,109,41)" rx="2" ry="2" />
+<text  x="35.04" y="191.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (617 samples, 2.26%)</title><rect x="196.2" y="261" width="26.6" height="15.0" fill="rgb(252,30,11)" rx="2" ry="2" />
+<text  x="199.23" y="271.5" >c..</text>
+</g>
+<g >
+<title>class@anonymous::try_login (8 samples, 0.03%)</title><rect x="1107.2" y="341" width="0.4" height="15.0" fill="rgb(239,187,39)" rx="2" ry="2" />
+<text  x="1110.22" y="351.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (1,006 samples, 3.68%)</title><rect x="1015.2" y="341" width="43.4" height="15.0" fill="rgb(233,72,54)" rx="2" ry="2" />
+<text  x="1018.16" y="351.5" >clas..</text>
+</g>
+<g >
+<title>file_exists (7 samples, 0.03%)</title><rect x="1135.2" y="373" width="0.3" height="15.0" fill="rgb(212,86,1)" rx="2" ry="2" />
+<text  x="1138.21" y="383.5" ></text>
+</g>
+<g >
+<title>calculate_passhash (8 samples, 0.03%)</title><rect x="1107.2" y="325" width="0.4" height="15.0" fill="rgb(225,26,49)" rx="2" ry="2" />
+<text  x="1110.22" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Container::createDefaultDefinitionSource (44 samples, 0.16%)</title><rect x="15.2" y="485" width="1.9" height="15.0" fill="rgb(227,170,31)" rx="2" ry="2" />
+<text  x="18.22" y="495.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::render (18 samples, 0.07%)</title><rect x="231.8" y="325" width="0.7" height="15.0" fill="rgb(245,192,20)" rx="2" ry="2" />
+<text  x="234.77" y="335.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (8 samples, 0.03%)</title><rect x="1133.5" y="405" width="0.3" height="15.0" fill="rgb(226,55,37)" rx="2" ry="2" />
+<text  x="1136.49" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (20 samples, 0.07%)</title><rect x="1108.4" y="325" width="0.8" height="15.0" fill="rgb(247,66,21)" rx="2" ry="2" />
+<text  x="1111.38" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (5 samples, 0.02%)</title><rect x="223.0" y="261" width="0.2" height="15.0" fill="rgb(220,139,42)" rx="2" ry="2" />
+<text  x="225.97" y="271.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="1189.8" y="501" width="0.2" height="15.0" fill="rgb(237,44,21)" rx="2" ry="2" />
+<text  x="1192.83" y="511.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (39 samples, 0.14%)</title><rect x="970.4" y="117" width="1.7" height="15.0" fill="rgb(243,97,21)" rx="2" ry="2" />
+<text  x="973.43" y="127.5" ></text>
+</g>
+<g >
+<title>FastRoute\RouteCollector::addRoute (45 samples, 0.16%)</title><rect x="25.4" y="325" width="1.9" height="15.0" fill="rgb(250,161,1)" rx="2" ry="2" />
+<text  x="28.36" y="335.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (292 samples, 1.07%)</title><rect x="36.4" y="261" width="12.6" height="15.0" fill="rgb(221,132,42)" rx="2" ry="2" />
+<text  x="39.44" y="271.5" ></text>
+</g>
+<g >
+<title>file_exists (4 samples, 0.01%)</title><rect x="1132.8" y="357" width="0.2" height="15.0" fill="rgb(228,46,3)" rx="2" ry="2" />
+<text  x="1135.80" y="367.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (77 samples, 0.28%)</title><rect x="32.0" y="229" width="3.4" height="15.0" fill="rgb(242,108,43)" rx="2" ry="2" />
+<text  x="35.04" y="239.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (4 samples, 0.01%)</title><rect x="196.9" y="69" width="0.2" height="15.0" fill="rgb(226,174,29)" rx="2" ry="2" />
+<text  x="199.92" y="79.5" ></text>
+</g>
+<g >
+<title>ComposerAutoloaderInitf3b3a0107550f1c7053a4709b7059107::getLoader (17 samples, 0.06%)</title><rect x="11.5" y="485" width="0.7" height="15.0" fill="rgb(237,203,11)" rx="2" ry="2" />
+<text  x="14.47" y="495.5" ></text>
+</g>
+<g >
+<title>file_exists (21 samples, 0.08%)</title><rect x="1112.2" y="405" width="0.9" height="15.0" fill="rgb(212,75,20)" rx="2" ry="2" />
+<text  x="1115.18" y="415.5" ></text>
+</g>
+<g >
+<title>calculate_salt (5 samples, 0.02%)</title><rect x="1090.1" y="325" width="0.3" height="15.0" fill="rgb(209,203,30)" rx="2" ry="2" />
+<text  x="1093.14" y="335.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (12 samples, 0.04%)</title><rect x="869.1" y="309" width="0.5" height="15.0" fill="rgb(210,120,24)" rx="2" ry="2" />
+<text  x="872.05" y="319.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (9 samples, 0.03%)</title><rect x="1058.6" y="325" width="0.4" height="15.0" fill="rgb(241,146,32)" rx="2" ry="2" />
+<text  x="1061.60" y="335.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (190 samples, 0.69%)</title><rect x="223.4" y="341" width="8.2" height="15.0" fill="rgb(253,169,2)" rx="2" ry="2" />
+<text  x="226.36" y="351.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (3 samples, 0.01%)</title><rect x="193.7" y="133" width="0.2" height="15.0" fill="rgb(215,200,17)" rx="2" ry="2" />
+<text  x="196.73" y="143.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (7 samples, 0.03%)</title><rect x="1133.5" y="389" width="0.3" height="15.0" fill="rgb(251,180,7)" rx="2" ry="2" />
+<text  x="1136.53" y="399.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="12.8" y="469" width="0.2" height="15.0" fill="rgb(230,64,0)" rx="2" ry="2" />
+<text  x="15.76" y="479.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (15 samples, 0.05%)</title><rect x="23.3" y="277" width="0.7" height="15.0" fill="rgb(211,62,38)" rx="2" ry="2" />
+<text  x="26.33" y="287.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::generateVariableRouteData (7 samples, 0.03%)</title><rect x="24.8" y="309" width="0.3" height="15.0" fill="rgb(252,93,41)" rx="2" ry="2" />
+<text  x="27.80" y="319.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::prepareHeader (19 samples, 0.07%)</title><rect x="1118.0" y="389" width="0.9" height="15.0" fill="rgb(228,175,11)" rx="2" ry="2" />
+<text  x="1121.05" y="399.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="1130.0" y="469" width="0.1" height="15.0" fill="rgb(205,173,50)" rx="2" ry="2" />
+<text  x="1132.95" y="479.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (156 samples, 0.57%)</title><rect x="345.9" y="309" width="6.7" height="15.0" fill="rgb(230,37,48)" rx="2" ry="2" />
+<text  x="348.87" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (5 samples, 0.02%)</title><rect x="1137.4" y="373" width="0.2" height="15.0" fill="rgb(246,210,39)" rx="2" ry="2" />
+<text  x="1140.41" y="383.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (18 samples, 0.07%)</title><rect x="1114.6" y="373" width="0.7" height="15.0" fill="rgb(231,177,49)" rx="2" ry="2" />
+<text  x="1117.55" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (370 samples, 1.35%)</title><rect x="838.8" y="341" width="15.9" height="15.0" fill="rgb(247,89,54)" rx="2" ry="2" />
+<text  x="841.77" y="351.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (14 samples, 0.05%)</title><rect x="1131.7" y="437" width="0.6" height="15.0" fill="rgb(229,69,6)" rx="2" ry="2" />
+<text  x="1134.68" y="447.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (153 samples, 0.56%)</title><rect x="167.8" y="341" width="6.6" height="15.0" fill="rgb(226,110,53)" rx="2" ry="2" />
+<text  x="170.76" y="351.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (27 samples, 0.10%)</title><rect x="230.3" y="165" width="1.2" height="15.0" fill="rgb(242,106,35)" rx="2" ry="2" />
+<text  x="233.35" y="175.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (8 samples, 0.03%)</title><rect x="1131.8" y="405" width="0.4" height="15.0" fill="rgb(215,79,7)" rx="2" ry="2" />
+<text  x="1134.85" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\MiddlewareDispatcher::handle (25,078 samples, 91.68%)</title><rect x="28.2" y="421" width="1081.9" height="15.0" fill="rgb(229,133,34)" rx="2" ry="2" />
+<text  x="31.25" y="431.5" >Slim\MiddlewareDispatcher::handle</text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::setHeaders (30 samples, 0.11%)</title><rect x="1117.6" y="421" width="1.3" height="15.0" fill="rgb(205,85,52)" rx="2" ry="2" />
+<text  x="1120.57" y="431.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (77 samples, 0.28%)</title><rect x="32.0" y="213" width="3.4" height="15.0" fill="rgb(242,54,29)" rx="2" ry="2" />
+<text  x="35.04" y="223.5" ></text>
+</g>
+<g >
+<title>shell_exec (7 samples, 0.03%)</title><rect x="110.2" y="277" width="0.3" height="15.0" fill="rgb(239,186,40)" rx="2" ry="2" />
+<text  x="113.17" y="287.5" ></text>
+</g>
+<g >
+<title>shell_exec (1,412 samples, 5.16%)</title><rect x="49.3" y="277" width="60.9" height="15.0" fill="rgb(249,9,34)" rx="2" ry="2" />
+<text  x="52.26" y="287.5" >shell_..</text>
+</g>
+<g >
+<title>Slim\Routing\Route::run (25,087 samples, 91.71%)</title><rect x="28.0" y="437" width="1082.2" height="15.0" fill="rgb(238,228,17)" rx="2" ry="2" />
+<text  x="30.99" y="447.5" >Slim\Routing\Route::run</text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (7 samples, 0.03%)</title><rect x="1132.7" y="437" width="0.3" height="15.0" fill="rgb(229,18,44)" rx="2" ry="2" />
+<text  x="1135.71" y="447.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (83 samples, 0.30%)</title><rect x="31.8" y="293" width="3.6" height="15.0" fill="rgb(254,91,52)" rx="2" ry="2" />
+<text  x="34.78" y="303.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (28 samples, 0.10%)</title><rect x="230.3" y="325" width="1.2" height="15.0" fill="rgb(240,193,32)" rx="2" ry="2" />
+<text  x="233.31" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (8 samples, 0.03%)</title><rect x="1132.4" y="437" width="0.3" height="15.0" fill="rgb(211,123,34)" rx="2" ry="2" />
+<text  x="1135.37" y="447.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Request::__clone (3 samples, 0.01%)</title><rect x="27.6" y="405" width="0.1" height="15.0" fill="rgb(224,113,3)" rx="2" ry="2" />
+<text  x="30.60" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (6 samples, 0.02%)</title><rect x="1134.4" y="405" width="0.3" height="15.0" fill="rgb(243,145,16)" rx="2" ry="2" />
+<text  x="1137.44" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (12 samples, 0.04%)</title><rect x="23.5" y="261" width="0.5" height="15.0" fill="rgb(242,226,44)" rx="2" ry="2" />
+<text  x="26.46" y="271.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (191 samples, 0.70%)</title><rect x="939.7" y="197" width="8.2" height="15.0" fill="rgb(245,162,32)" rx="2" ry="2" />
+<text  x="942.67" y="207.5" ></text>
+</g>
+<g >
+<title>file_exists (7 samples, 0.03%)</title><rect x="35.9" y="229" width="0.3" height="15.0" fill="rgb(249,183,46)" rx="2" ry="2" />
+<text  x="38.88" y="239.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (84 samples, 0.31%)</title><rect x="31.8" y="309" width="3.6" height="15.0" fill="rgb(212,197,50)" rx="2" ry="2" />
+<text  x="34.78" y="319.5" ></text>
+</g>
+<g >
+<title>htmlspecialchars (5 samples, 0.02%)</title><rect x="232.2" y="181" width="0.3" height="15.0" fill="rgb(227,3,25)" rx="2" ry="2" />
+<text  x="235.25" y="191.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\ServerRequestCreatorFactory::determineServerRequestCreator (31 samples, 0.11%)</title><rect x="1120.8" y="469" width="1.3" height="15.0" fill="rgb(238,229,48)" rx="2" ry="2" />
+<text  x="1123.81" y="479.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (9 samples, 0.03%)</title><rect x="13.1" y="421" width="0.4" height="15.0" fill="rgb(236,135,35)" rx="2" ry="2" />
+<text  x="16.11" y="431.5" ></text>
+</g>
+<g >
+<title>file_put_contents (33 samples, 0.12%)</title><rect x="960.0" y="341" width="1.5" height="15.0" fill="rgb(236,66,7)" rx="2" ry="2" />
+<text  x="963.03" y="351.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (85 samples, 0.31%)</title><rect x="31.7" y="341" width="3.7" height="15.0" fill="rgb(237,55,42)" rx="2" ry="2" />
+<text  x="34.74" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (16 samples, 0.06%)</title><rect x="1130.1" y="437" width="0.7" height="15.0" fill="rgb(213,82,2)" rx="2" ry="2" />
+<text  x="1133.12" y="447.5" ></text>
+</g>
+<g >
+<title>escape_html (3 samples, 0.01%)</title><rect x="1015.0" y="197" width="0.2" height="15.0" fill="rgb(249,185,26)" rx="2" ry="2" />
+<text  x="1018.03" y="207.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (3 samples, 0.01%)</title><rect x="193.7" y="181" width="0.2" height="15.0" fill="rgb(252,180,13)" rx="2" ry="2" />
+<text  x="196.73" y="191.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (611 samples, 2.23%)</title><rect x="196.5" y="245" width="26.3" height="15.0" fill="rgb(205,44,19)" rx="2" ry="2" />
+<text  x="199.49" y="255.5" >{..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (16 samples, 0.06%)</title><rect x="1130.9" y="437" width="0.7" height="15.0" fill="rgb(230,37,32)" rx="2" ry="2" />
+<text  x="1133.90" y="447.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (192 samples, 0.70%)</title><rect x="939.6" y="261" width="8.3" height="15.0" fill="rgb(228,84,42)" rx="2" ry="2" />
+<text  x="942.63" y="271.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (39 samples, 0.14%)</title><rect x="903.9" y="149" width="1.7" height="15.0" fill="rgb(241,125,26)" rx="2" ry="2" />
+<text  x="906.91" y="159.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (42 samples, 0.15%)</title><rect x="903.8" y="325" width="1.8" height="15.0" fill="rgb(249,47,11)" rx="2" ry="2" />
+<text  x="906.82" y="335.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetchTemplate (13 samples, 0.05%)</title><rect x="597.7" y="293" width="0.6" height="15.0" fill="rgb(228,201,9)" rx="2" ry="2" />
+<text  x="600.71" y="303.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (18 samples, 0.07%)</title><rect x="352.6" y="309" width="0.8" height="15.0" fill="rgb(245,17,39)" rx="2" ry="2" />
+<text  x="355.60" y="319.5" ></text>
+</g>
+<g >
+<title>class@anonymous::get_session_user (10 samples, 0.04%)</title><rect x="1058.6" y="341" width="0.4" height="15.0" fill="rgb(206,158,23)" rx="2" ry="2" />
+<text  x="1061.56" y="351.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (38 samples, 0.14%)</title><rect x="166.1" y="261" width="1.7" height="15.0" fill="rgb(237,141,6)" rx="2" ry="2" />
+<text  x="169.12" y="271.5" ></text>
+</g>
+<g >
+<title>Slim\Middleware\RoutingMiddleware::resolveRoutingResultsFromRequest (168 samples, 0.61%)</title><rect x="20.1" y="421" width="7.3" height="15.0" fill="rgb(209,63,37)" rx="2" ry="2" />
+<text  x="23.14" y="431.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (6 samples, 0.02%)</title><rect x="1137.4" y="389" width="0.3" height="15.0" fill="rgb(225,122,22)" rx="2" ry="2" />
+<text  x="1140.41" y="399.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (288 samples, 1.05%)</title><rect x="36.6" y="165" width="12.4" height="15.0" fill="rgb(239,34,33)" rx="2" ry="2" />
+<text  x="39.62" y="175.5" ></text>
+</g>
+<g >
+<title>ComposerAutoloaderInitf3b3a0107550f1c7053a4709b7059107::getLoader (14 samples, 0.05%)</title><rect x="1187.2" y="485" width="0.6" height="15.0" fill="rgb(247,146,27)" rx="2" ry="2" />
+<text  x="1190.24" y="495.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (16 samples, 0.06%)</title><rect x="959.0" y="245" width="0.6" height="15.0" fill="rgb(240,195,9)" rx="2" ry="2" />
+<text  x="961.95" y="255.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (259 samples, 0.95%)</title><rect x="583.4" y="261" width="11.2" height="15.0" fill="rgb(228,152,8)" rx="2" ry="2" />
+<text  x="586.39" y="271.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:403-420) (4 samples, 0.01%)</title><rect x="1128.1" y="373" width="0.2" height="15.0" fill="rgb(241,1,12)" rx="2" ry="2" />
+<text  x="1131.10" y="383.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (60 samples, 0.22%)</title><rect x="22.2" y="341" width="2.6" height="15.0" fill="rgb(221,103,6)" rx="2" ry="2" />
+<text  x="25.16" y="351.5" ></text>
+</g>
+<g >
+<title>fopen (6 samples, 0.02%)</title><rect x="1119.6" y="453" width="0.3" height="15.0" fill="rgb(221,160,8)" rx="2" ry="2" />
+<text  x="1122.64" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollectorProxy::get (19 samples, 0.07%)</title><rect x="1137.0" y="501" width="0.8" height="15.0" fill="rgb(245,74,52)" rx="2" ry="2" />
+<text  x="1140.03" y="511.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (25 samples, 0.09%)</title><rect x="1113.5" y="389" width="1.1" height="15.0" fill="rgb(206,178,38)" rx="2" ry="2" />
+<text  x="1116.47" y="399.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (21 samples, 0.08%)</title><rect x="1113.6" y="373" width="1.0" height="15.0" fill="rgb(241,34,10)" rx="2" ry="2" />
+<text  x="1116.65" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (39 samples, 0.14%)</title><rect x="903.9" y="165" width="1.7" height="15.0" fill="rgb(239,210,36)" rx="2" ry="2" />
+<text  x="906.91" y="175.5" ></text>
+</g>
+<g >
+<title>Slim\MiddlewareDispatcher::handle (5 samples, 0.02%)</title><rect x="1189.1" y="517" width="0.2" height="15.0" fill="rgb(216,98,44)" rx="2" ry="2" />
+<text  x="1192.09" y="527.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetchAll (7 samples, 0.03%)</title><rect x="647.8" y="325" width="0.3" height="15.0" fill="rgb(237,180,39)" rx="2" ry="2" />
+<text  x="650.80" y="335.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (7 samples, 0.03%)</title><rect x="1109.2" y="341" width="0.3" height="15.0" fill="rgb(242,13,31)" rx="2" ry="2" />
+<text  x="1112.25" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\AppFactory::attemptResponseFactoryDecoration (8 samples, 0.03%)</title><rect x="1135.9" y="469" width="0.3" height="15.0" fill="rgb(222,111,15)" rx="2" ry="2" />
+<text  x="1138.86" y="479.5" ></text>
+</g>
+<g >
+<title>calculate_salt (1,412 samples, 5.16%)</title><rect x="49.3" y="309" width="60.9" height="15.0" fill="rgb(227,19,38)" rx="2" ry="2" />
+<text  x="52.26" y="319.5" >calcul..</text>
+</g>
+<g >
+<title>file_exists (5 samples, 0.02%)</title><rect x="1134.5" y="357" width="0.2" height="15.0" fill="rgb(251,187,43)" rx="2" ry="2" />
+<text  x="1137.48" y="367.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (69 samples, 0.25%)</title><rect x="972.3" y="325" width="3.0" height="15.0" fill="rgb(249,202,9)" rx="2" ry="2" />
+<text  x="975.28" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (12 samples, 0.04%)</title><rect x="194.9" y="245" width="0.6" height="15.0" fill="rgb(242,39,36)" rx="2" ry="2" />
+<text  x="197.93" y="255.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (7 samples, 0.03%)</title><rect x="1134.8" y="437" width="0.3" height="15.0" fill="rgb(205,202,2)" rx="2" ry="2" />
+<text  x="1137.83" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (8 samples, 0.03%)</title><rect x="1116.3" y="373" width="0.4" height="15.0" fill="rgb(247,70,10)" rx="2" ry="2" />
+<text  x="1119.32" y="383.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\ServerRequestCreatorFactory::create (33 samples, 0.12%)</title><rect x="1120.7" y="485" width="1.4" height="15.0" fill="rgb(246,15,2)" rx="2" ry="2" />
+<text  x="1123.72" y="495.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (134 samples, 0.49%)</title><rect x="1059.1" y="325" width="5.8" height="15.0" fill="rgb(226,14,29)" rx="2" ry="2" />
+<text  x="1062.12" y="335.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (14 samples, 0.05%)</title><rect x="1090.6" y="325" width="0.6" height="15.0" fill="rgb(239,207,27)" rx="2" ry="2" />
+<text  x="1093.57" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (607 samples, 2.22%)</title><rect x="196.7" y="165" width="26.1" height="15.0" fill="rgb(231,181,36)" rx="2" ry="2" />
+<text  x="199.66" y="175.5" >D..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="1137.2" y="405" width="0.1" height="15.0" fill="rgb(225,70,18)" rx="2" ry="2" />
+<text  x="1140.20" y="415.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (14 samples, 0.05%)</title><rect x="863.7" y="261" width="0.6" height="15.0" fill="rgb(246,176,5)" rx="2" ry="2" />
+<text  x="866.70" y="271.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (39 samples, 0.14%)</title><rect x="903.9" y="101" width="1.7" height="15.0" fill="rgb(220,35,46)" rx="2" ry="2" />
+<text  x="906.91" y="111.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (8 samples, 0.03%)</title><rect x="939.2" y="277" width="0.4" height="15.0" fill="rgb(219,209,45)" rx="2" ry="2" />
+<text  x="942.24" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Factory\UriFactory::createFromGlobals (37 samples, 0.14%)</title><rect x="1115.9" y="453" width="1.6" height="15.0" fill="rgb(239,199,33)" rx="2" ry="2" />
+<text  x="1118.93" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Dispatcher::{closure}(/home/isucon/private_isu/webapp/php/vendor/slim/slim/Slim/Routing/Dispatcher.php:30-36) (51 samples, 0.19%)</title><rect x="25.1" y="341" width="2.2" height="15.0" fill="rgb(212,139,27)" rx="2" ry="2" />
+<text  x="28.10" y="351.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (16 samples, 0.06%)</title><rect x="959.0" y="293" width="0.6" height="15.0" fill="rgb(244,181,17)" rx="2" ry="2" />
+<text  x="961.95" y="303.5" ></text>
+</g>
+<g >
+<title>preg_split (3 samples, 0.01%)</title><rect x="27.1" y="293" width="0.2" height="15.0" fill="rgb(238,91,3)" rx="2" ry="2" />
+<text  x="30.13" y="303.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (41 samples, 0.15%)</title><rect x="961.5" y="277" width="1.8" height="15.0" fill="rgb(246,16,46)" rx="2" ry="2" />
+<text  x="964.54" y="287.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (8 samples, 0.03%)</title><rect x="14.7" y="453" width="0.3" height="15.0" fill="rgb(210,4,17)" rx="2" ry="2" />
+<text  x="17.70" y="463.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::addRoute (26 samples, 0.10%)</title><rect x="25.4" y="309" width="1.1" height="15.0" fill="rgb(237,136,27)" rx="2" ry="2" />
+<text  x="28.40" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Source\DefinitionArray::__construct (3 samples, 0.01%)</title><rect x="16.9" y="469" width="0.1" height="15.0" fill="rgb(248,202,20)" rx="2" ry="2" />
+<text  x="19.90" y="479.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Uri::filterQuery (3 samples, 0.01%)</title><rect x="1117.2" y="421" width="0.1" height="15.0" fill="rgb(236,155,19)" rx="2" ry="2" />
+<text  x="1120.18" y="431.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (39 samples, 0.14%)</title><rect x="970.4" y="165" width="1.7" height="15.0" fill="rgb(206,68,46)" rx="2" ry="2" />
+<text  x="973.43" y="175.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (8 samples, 0.03%)</title><rect x="1116.3" y="357" width="0.4" height="15.0" fill="rgb(217,45,37)" rx="2" ry="2" />
+<text  x="1119.32" y="367.5" ></text>
+</g>
+<g >
+<title>trim (5 samples, 0.02%)</title><rect x="1189.6" y="517" width="0.2" height="15.0" fill="rgb(227,127,22)" rx="2" ry="2" />
+<text  x="1192.57" y="527.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\Psr17\Psr17Factory::isResponseFactoryAvailable (6 samples, 0.02%)</title><rect x="1135.9" y="453" width="0.3" height="15.0" fill="rgb(248,203,18)" rx="2" ry="2" />
+<text  x="1138.95" y="463.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (14 samples, 0.05%)</title><rect x="863.7" y="277" width="0.6" height="15.0" fill="rgb(251,49,13)" rx="2" ry="2" />
+<text  x="866.70" y="287.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (28 samples, 0.10%)</title><rect x="230.3" y="293" width="1.2" height="15.0" fill="rgb(237,183,42)" rx="2" ry="2" />
+<text  x="233.31" y="303.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (4 samples, 0.01%)</title><rect x="15.0" y="469" width="0.2" height="15.0" fill="rgb(226,22,30)" rx="2" ry="2" />
+<text  x="18.05" y="479.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (3 samples, 0.01%)</title><rect x="193.7" y="117" width="0.2" height="15.0" fill="rgb(241,110,51)" rx="2" ry="2" />
+<text  x="196.73" y="127.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (38 samples, 0.14%)</title><rect x="166.1" y="117" width="1.7" height="15.0" fill="rgb(238,35,17)" rx="2" ry="2" />
+<text  x="169.12" y="127.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (191 samples, 0.70%)</title><rect x="939.7" y="229" width="8.2" height="15.0" fill="rgb(227,56,38)" rx="2" ry="2" />
+<text  x="942.67" y="239.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetch (3 samples, 0.01%)</title><rect x="1189.1" y="421" width="0.1" height="15.0" fill="rgb(254,28,48)" rx="2" ry="2" />
+<text  x="1192.09" y="431.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::getDefinitionResolver (3 samples, 0.01%)</title><rect x="49.0" y="293" width="0.2" height="15.0" fill="rgb(218,38,39)" rx="2" ry="2" />
+<text  x="52.04" y="303.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (7 samples, 0.03%)</title><rect x="597.2" y="245" width="0.3" height="15.0" fill="rgb(250,4,53)" rx="2" ry="2" />
+<text  x="600.15" y="255.5" ></text>
+</g>
+<g >
+<title>FastRoute\RouteCollector::addRoute (5 samples, 0.02%)</title><rect x="21.9" y="325" width="0.2" height="15.0" fill="rgb(236,45,27)" rx="2" ry="2" />
+<text  x="24.91" y="335.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:323-333) (5,935 samples, 21.70%)</title><rect x="582.7" y="357" width="256.0" height="15.0" fill="rgb(243,226,30)" rx="2" ry="2" />
+<text  x="585.70" y="367.5" >Closure::{closure}(/home/isucon/pr..</text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::addHeader (27 samples, 0.10%)</title><rect x="1117.7" y="405" width="1.2" height="15.0" fill="rgb(215,141,26)" rx="2" ry="2" />
+<text  x="1120.70" y="415.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/autoload_real.php:37-43) (4 samples, 0.01%)</title><rect x="12.0" y="469" width="0.2" height="15.0" fill="rgb(220,54,25)" rx="2" ry="2" />
+<text  x="15.03" y="479.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollector::map (18 samples, 0.07%)</title><rect x="1137.1" y="469" width="0.7" height="15.0" fill="rgb(226,222,13)" rx="2" ry="2" />
+<text  x="1140.07" y="479.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (24 samples, 0.09%)</title><rect x="1134.8" y="469" width="1.1" height="15.0" fill="rgb(218,170,18)" rx="2" ry="2" />
+<text  x="1137.83" y="479.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (190 samples, 0.69%)</title><rect x="939.7" y="117" width="8.2" height="15.0" fill="rgb(240,92,34)" rx="2" ry="2" />
+<text  x="942.71" y="127.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (5 samples, 0.02%)</title><rect x="970.1" y="325" width="0.2" height="15.0" fill="rgb(214,229,38)" rx="2" ry="2" />
+<text  x="973.08" y="335.5" ></text>
+</g>
+<g >
+<title>PDO::prepare (8 samples, 0.03%)</title><rect x="236.3" y="325" width="0.3" height="15.0" fill="rgb(247,213,36)" rx="2" ry="2" />
+<text  x="239.26" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (204 samples, 0.75%)</title><rect x="939.2" y="341" width="8.8" height="15.0" fill="rgb(222,36,30)" rx="2" ry="2" />
+<text  x="942.19" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (10 samples, 0.04%)</title><rect x="13.1" y="453" width="0.4" height="15.0" fill="rgb(234,216,32)" rx="2" ry="2" />
+<text  x="16.11" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (3 samples, 0.01%)</title><rect x="583.0" y="261" width="0.1" height="15.0" fill="rgb(214,92,21)" rx="2" ry="2" />
+<text  x="585.96" y="271.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (39 samples, 0.14%)</title><rect x="903.9" y="245" width="1.7" height="15.0" fill="rgb(212,200,46)" rx="2" ry="2" />
+<text  x="906.91" y="255.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="1122.0" y="357" width="0.1" height="15.0" fill="rgb(222,120,9)" rx="2" ry="2" />
+<text  x="1125.01" y="367.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (597 samples, 2.18%)</title><rect x="197.1" y="101" width="25.7" height="15.0" fill="rgb(216,172,6)" rx="2" ry="2" />
+<text  x="200.09" y="111.5" >P..</text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (10 samples, 0.04%)</title><rect x="232.0" y="213" width="0.5" height="15.0" fill="rgb(247,34,1)" rx="2" ry="2" />
+<text  x="235.03" y="223.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (3 samples, 0.01%)</title><rect x="24.6" y="197" width="0.2" height="15.0" fill="rgb(239,81,19)" rx="2" ry="2" />
+<text  x="27.62" y="207.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (16 samples, 0.06%)</title><rect x="959.0" y="309" width="0.6" height="15.0" fill="rgb(209,89,14)" rx="2" ry="2" />
+<text  x="961.95" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (290 samples, 1.06%)</title><rect x="36.5" y="213" width="12.5" height="15.0" fill="rgb(212,191,9)" rx="2" ry="2" />
+<text  x="39.53" y="223.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (278 samples, 1.02%)</title><rect x="948.0" y="341" width="12.0" height="15.0" fill="rgb(210,112,42)" rx="2" ry="2" />
+<text  x="951.04" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (5 samples, 0.02%)</title><rect x="1133.8" y="405" width="0.2" height="15.0" fill="rgb(241,85,36)" rx="2" ry="2" />
+<text  x="1136.83" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (37 samples, 0.14%)</title><rect x="961.7" y="197" width="1.6" height="15.0" fill="rgb(224,99,54)" rx="2" ry="2" />
+<text  x="964.67" y="207.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (666 samples, 2.43%)</title><rect x="194.5" y="325" width="28.7" height="15.0" fill="rgb(252,123,29)" rx="2" ry="2" />
+<text  x="197.46" y="335.5" >DI..</text>
+</g>
+<g >
+<title>FastRoute\RouteCollector::getData (8 samples, 0.03%)</title><rect x="24.8" y="341" width="0.3" height="15.0" fill="rgb(243,147,37)" rx="2" ry="2" />
+<text  x="27.75" y="351.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (187 samples, 0.68%)</title><rect x="939.8" y="101" width="8.1" height="15.0" fill="rgb(238,207,53)" rx="2" ry="2" />
+<text  x="942.84" y="111.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (9 samples, 0.03%)</title><rect x="1058.6" y="309" width="0.4" height="15.0" fill="rgb(213,89,10)" rx="2" ry="2" />
+<text  x="1061.60" y="319.5" ></text>
+</g>
+<g >
+<title>calculate_passhash (37 samples, 0.14%)</title><rect x="1101.9" y="325" width="1.6" height="15.0" fill="rgb(226,113,15)" rx="2" ry="2" />
+<text  x="1104.91" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (41 samples, 0.15%)</title><rect x="903.8" y="293" width="1.8" height="15.0" fill="rgb(208,194,44)" rx="2" ry="2" />
+<text  x="906.82" y="303.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (77 samples, 0.28%)</title><rect x="32.0" y="149" width="3.4" height="15.0" fill="rgb(209,33,51)" rx="2" ry="2" />
+<text  x="35.04" y="159.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (14 samples, 0.05%)</title><rect x="231.9" y="245" width="0.6" height="15.0" fill="rgb(210,128,23)" rx="2" ry="2" />
+<text  x="234.90" y="255.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (13 samples, 0.05%)</title><rect x="1116.1" y="437" width="0.6" height="15.0" fill="rgb(241,202,53)" rx="2" ry="2" />
+<text  x="1119.10" y="447.5" ></text>
+</g>
+<g >
+<title>class@anonymous::try_login (37 samples, 0.14%)</title><rect x="1101.9" y="341" width="1.6" height="15.0" fill="rgb(230,11,49)" rx="2" ry="2" />
+<text  x="1104.91" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\App::__construct (92 samples, 0.34%)</title><rect x="1130.8" y="485" width="4.0" height="15.0" fill="rgb(243,156,53)" rx="2" ry="2" />
+<text  x="1133.81" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (9 samples, 0.03%)</title><rect x="1133.1" y="421" width="0.4" height="15.0" fill="rgb(222,100,11)" rx="2" ry="2" />
+<text  x="1136.10" y="431.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (15 samples, 0.05%)</title><rect x="1114.6" y="341" width="0.7" height="15.0" fill="rgb(251,27,15)" rx="2" ry="2" />
+<text  x="1117.64" y="351.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (39 samples, 0.14%)</title><rect x="970.4" y="133" width="1.7" height="15.0" fill="rgb(245,148,35)" rx="2" ry="2" />
+<text  x="973.43" y="143.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::addRoute (4 samples, 0.01%)</title><rect x="21.9" y="309" width="0.2" height="15.0" fill="rgb(241,60,54)" rx="2" ry="2" />
+<text  x="24.91" y="319.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (15 samples, 0.05%)</title><rect x="1090.6" y="341" width="0.6" height="15.0" fill="rgb(225,186,24)" rx="2" ry="2" />
+<text  x="1093.57" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\CallableResolver::resolveByPredicate (5 samples, 0.02%)</title><rect x="28.9" y="357" width="0.3" height="15.0" fill="rgb(214,160,14)" rx="2" ry="2" />
+<text  x="31.94" y="367.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (14 samples, 0.05%)</title><rect x="863.7" y="245" width="0.6" height="15.0" fill="rgb(231,82,15)" rx="2" ry="2" />
+<text  x="866.70" y="255.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (68 samples, 0.25%)</title><rect x="972.3" y="293" width="2.9" height="15.0" fill="rgb(252,66,50)" rx="2" ry="2" />
+<text  x="975.28" y="303.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (27 samples, 0.10%)</title><rect x="15.7" y="421" width="1.2" height="15.0" fill="rgb(214,203,37)" rx="2" ry="2" />
+<text  x="18.74" y="431.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (34 samples, 0.12%)</title><rect x="1088.6" y="341" width="1.4" height="15.0" fill="rgb(236,187,9)" rx="2" ry="2" />
+<text  x="1091.58" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\App::run (25,775 samples, 94.23%)</title><rect x="17.6" y="501" width="1111.9" height="15.0" fill="rgb(239,222,4)" rx="2" ry="2" />
+<text  x="20.64" y="511.5" >Slim\App::run</text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (604 samples, 2.21%)</title><rect x="196.8" y="117" width="26.0" height="15.0" fill="rgb(209,154,6)" rx="2" ry="2" />
+<text  x="199.79" y="127.5" >{..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (31 samples, 0.11%)</title><rect x="12.2" y="501" width="1.3" height="15.0" fill="rgb(211,50,25)" rx="2" ry="2" />
+<text  x="15.20" y="511.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\AppFactory::determineResponseFactory (52 samples, 0.19%)</title><rect x="1134.8" y="485" width="2.2" height="15.0" fill="rgb(254,217,41)" rx="2" ry="2" />
+<text  x="1137.78" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (33 samples, 0.12%)</title><rect x="1130.9" y="469" width="1.4" height="15.0" fill="rgb(208,175,25)" rx="2" ry="2" />
+<text  x="1133.86" y="479.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::eof (6 samples, 0.02%)</title><rect x="1128.6" y="437" width="0.3" height="15.0" fill="rgb(247,86,43)" rx="2" ry="2" />
+<text  x="1131.61" y="447.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (611 samples, 2.23%)</title><rect x="196.5" y="229" width="26.3" height="15.0" fill="rgb(253,63,15)" rx="2" ry="2" />
+<text  x="199.49" y="239.5" >c..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (11 samples, 0.04%)</title><rect x="20.5" y="357" width="0.5" height="15.0" fill="rgb(215,11,47)" rx="2" ry="2" />
+<text  x="23.48" y="367.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (12 samples, 0.04%)</title><rect x="1121.2" y="421" width="0.5" height="15.0" fill="rgb(238,221,27)" rx="2" ry="2" />
+<text  x="1124.15" y="431.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (529 samples, 1.93%)</title><rect x="1065.6" y="309" width="22.8" height="15.0" fill="rgb(242,0,30)" rx="2" ry="2" />
+<text  x="1068.59" y="319.5" >P..</text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (10 samples, 0.04%)</title><rect x="16.5" y="405" width="0.4" height="15.0" fill="rgb(220,79,53)" rx="2" ry="2" />
+<text  x="19.47" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::isSeekable (3 samples, 0.01%)</title><rect x="1129.3" y="453" width="0.1" height="15.0" fill="rgb(210,173,39)" rx="2" ry="2" />
+<text  x="1132.30" y="463.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetchAll (10 samples, 0.04%)</title><rect x="864.3" y="341" width="0.4" height="15.0" fill="rgb(251,211,24)" rx="2" ry="2" />
+<text  x="867.31" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::isPipe (4 samples, 0.01%)</title><rect x="1115.6" y="405" width="0.2" height="15.0" fill="rgb(247,190,47)" rx="2" ry="2" />
+<text  x="1118.59" y="415.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (4,419 samples, 16.15%)</title><rect x="648.1" y="325" width="190.6" height="15.0" fill="rgb(247,29,13)" rx="2" ry="2" />
+<text  x="651.10" y="335.5" >class@anonymous::fetch_f..</text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (6 samples, 0.02%)</title><rect x="1134.4" y="437" width="0.3" height="15.0" fill="rgb(246,173,1)" rx="2" ry="2" />
+<text  x="1137.44" y="447.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::__construct (30 samples, 0.11%)</title><rect x="1117.6" y="437" width="1.3" height="15.0" fill="rgb(230,151,38)" rx="2" ry="2" />
+<text  x="1120.57" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (11 samples, 0.04%)</title><rect x="1130.2" y="405" width="0.4" height="15.0" fill="rgb(216,190,4)" rx="2" ry="2" />
+<text  x="1133.17" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (9 samples, 0.03%)</title><rect x="839.2" y="245" width="0.4" height="15.0" fill="rgb(209,68,52)" rx="2" ry="2" />
+<text  x="842.20" y="255.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (222 samples, 0.81%)</title><rect x="854.7" y="341" width="9.6" height="15.0" fill="rgb(220,180,31)" rx="2" ry="2" />
+<text  x="857.73" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (5 samples, 0.02%)</title><rect x="1121.9" y="405" width="0.2" height="15.0" fill="rgb(218,210,30)" rx="2" ry="2" />
+<text  x="1124.93" y="415.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (4 samples, 0.01%)</title><rect x="1136.9" y="405" width="0.1" height="15.0" fill="rgb(249,60,7)" rx="2" ry="2" />
+<text  x="1139.85" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\ResponseEmitter::isResponseEmpty (4 samples, 0.01%)</title><rect x="1129.3" y="469" width="0.1" height="15.0" fill="rgb(242,15,23)" rx="2" ry="2" />
+<text  x="1132.26" y="479.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (608 samples, 2.22%)</title><rect x="196.6" y="181" width="26.2" height="15.0" fill="rgb(235,10,42)" rx="2" ry="2" />
+<text  x="199.62" y="191.5" >D..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="1136.7" y="405" width="0.2" height="15.0" fill="rgb(226,205,44)" rx="2" ry="2" />
+<text  x="1139.72" y="415.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (5 samples, 0.02%)</title><rect x="236.4" y="309" width="0.2" height="15.0" fill="rgb(235,38,9)" rx="2" ry="2" />
+<text  x="239.39" y="319.5" ></text>
+</g>
+<g >
+<title>file_exists (8 samples, 0.03%)</title><rect x="1133.1" y="389" width="0.4" height="15.0" fill="rgb(214,84,43)" rx="2" ry="2" />
+<text  x="1136.14" y="399.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Message::withHeader (4 samples, 0.01%)</title><rect x="1128.1" y="357" width="0.2" height="15.0" fill="rgb(240,199,10)" rx="2" ry="2" />
+<text  x="1131.10" y="367.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (28 samples, 0.10%)</title><rect x="230.3" y="309" width="1.2" height="15.0" fill="rgb(254,86,40)" rx="2" ry="2" />
+<text  x="233.31" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (677 samples, 2.47%)</title><rect x="194.1" y="341" width="29.2" height="15.0" fill="rgb(254,227,43)" rx="2" ry="2" />
+<text  x="197.11" y="351.5" >DI..</text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (258 samples, 0.94%)</title><rect x="583.4" y="245" width="11.2" height="15.0" fill="rgb(232,189,25)" rx="2" ry="2" />
+<text  x="586.43" y="255.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (289 samples, 1.06%)</title><rect x="36.6" y="197" width="12.4" height="15.0" fill="rgb(218,161,33)" rx="2" ry="2" />
+<text  x="39.57" y="207.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\Psr17\Psr17Factory::isServerRequestCreatorAvailable (12 samples, 0.04%)</title><rect x="1121.2" y="453" width="0.5" height="15.0" fill="rgb(235,193,50)" rx="2" ry="2" />
+<text  x="1124.15" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (3 samples, 0.01%)</title><rect x="1116.1" y="421" width="0.1" height="15.0" fill="rgb(224,207,45)" rx="2" ry="2" />
+<text  x="1119.10" y="431.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (5 samples, 0.02%)</title><rect x="1189.8" y="517" width="0.2" height="15.0" fill="rgb(240,69,44)" rx="2" ry="2" />
+<text  x="1192.78" y="527.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/autoload_real.php:37-43) (8 samples, 0.03%)</title><rect x="1187.5" y="469" width="0.3" height="15.0" fill="rgb(231,111,40)" rx="2" ry="2" />
+<text  x="1190.50" y="479.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (12 samples, 0.04%)</title><rect x="1137.2" y="437" width="0.5" height="15.0" fill="rgb(219,89,47)" rx="2" ry="2" />
+<text  x="1140.16" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (12 samples, 0.04%)</title><rect x="24.1" y="229" width="0.5" height="15.0" fill="rgb(229,1,31)" rx="2" ry="2" />
+<text  x="27.06" y="239.5" ></text>
+</g>
+<g >
+<title>file_exists (8 samples, 0.03%)</title><rect x="20.6" y="325" width="0.4" height="15.0" fill="rgb(236,40,15)" rx="2" ry="2" />
+<text  x="23.61" y="335.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (38 samples, 0.14%)</title><rect x="166.1" y="229" width="1.7" height="15.0" fill="rgb(207,102,27)" rx="2" ry="2" />
+<text  x="169.12" y="239.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::addRoute (3 samples, 0.01%)</title><rect x="21.6" y="309" width="0.1" height="15.0" fill="rgb(214,55,18)" rx="2" ry="2" />
+<text  x="24.56" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (363 samples, 1.33%)</title><rect x="839.0" y="293" width="15.7" height="15.0" fill="rgb(241,145,38)" rx="2" ry="2" />
+<text  x="842.03" y="303.5" ></text>
+</g>
+<g >
+<title>file_exists (15 samples, 0.05%)</title><rect x="22.6" y="293" width="0.6" height="15.0" fill="rgb(216,36,38)" rx="2" ry="2" />
+<text  x="25.60" y="303.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:403-420) (5 samples, 0.02%)</title><rect x="21.9" y="341" width="0.2" height="15.0" fill="rgb(229,110,53)" rx="2" ry="2" />
+<text  x="24.91" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="1137.4" y="357" width="0.2" height="15.0" fill="rgb(215,6,25)" rx="2" ry="2" />
+<text  x="1140.41" y="367.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (5 samples, 0.02%)</title><rect x="1064.7" y="309" width="0.2" height="15.0" fill="rgb(232,129,33)" rx="2" ry="2" />
+<text  x="1067.68" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (5 samples, 0.02%)</title><rect x="1109.3" y="309" width="0.2" height="15.0" fill="rgb(247,9,1)" rx="2" ry="2" />
+<text  x="1112.33" y="319.5" ></text>
+</g>
+<g >
+<title>file_exists (5 samples, 0.02%)</title><rect x="1134.2" y="405" width="0.2" height="15.0" fill="rgb(242,19,11)" rx="2" ry="2" />
+<text  x="1137.22" y="415.5" ></text>
+</g>
+<g >
+<title>strpos (7 samples, 0.03%)</title><rect x="1128.0" y="405" width="0.3" height="15.0" fill="rgb(212,23,25)" rx="2" ry="2" />
+<text  x="1130.97" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (39 samples, 0.14%)</title><rect x="970.4" y="197" width="1.7" height="15.0" fill="rgb(242,203,5)" rx="2" ry="2" />
+<text  x="973.43" y="207.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (16 samples, 0.06%)</title><rect x="24.1" y="245" width="0.7" height="15.0" fill="rgb(251,177,36)" rx="2" ry="2" />
+<text  x="27.06" y="255.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Factory\StreamFactory::createStreamFromFile (13 samples, 0.05%)</title><rect x="1115.4" y="453" width="0.5" height="15.0" fill="rgb(224,149,9)" rx="2" ry="2" />
+<text  x="1118.37" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::createFromGlobals (3 samples, 0.01%)</title><rect x="1111.0" y="453" width="0.1" height="15.0" fill="rgb(235,205,3)" rx="2" ry="2" />
+<text  x="1113.97" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (7 samples, 0.03%)</title><rect x="1133.8" y="421" width="0.3" height="15.0" fill="rgb(230,106,36)" rx="2" ry="2" />
+<text  x="1136.83" y="431.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Request::__construct (13 samples, 0.05%)</title><rect x="1119.0" y="453" width="0.6" height="15.0" fill="rgb(219,154,10)" rx="2" ry="2" />
+<text  x="1121.99" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::normalizeHeaderName (5 samples, 0.02%)</title><rect x="1118.1" y="373" width="0.2" height="15.0" fill="rgb(253,122,26)" rx="2" ry="2" />
+<text  x="1121.09" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (666 samples, 2.43%)</title><rect x="194.5" y="309" width="28.7" height="15.0" fill="rgb(223,195,24)" rx="2" ry="2" />
+<text  x="197.46" y="319.5" >DI..</text>
+</g>
+<g >
+<title>DI\Container::get (276 samples, 1.01%)</title><rect x="582.7" y="341" width="11.9" height="15.0" fill="rgb(244,218,14)" rx="2" ry="2" />
+<text  x="585.70" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (10 samples, 0.04%)</title><rect x="35.8" y="277" width="0.5" height="15.0" fill="rgb(223,201,4)" rx="2" ry="2" />
+<text  x="38.84" y="287.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (3 samples, 0.01%)</title><rect x="1136.6" y="389" width="0.1" height="15.0" fill="rgb(223,185,46)" rx="2" ry="2" />
+<text  x="1139.55" y="399.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (12 samples, 0.04%)</title><rect x="231.9" y="229" width="0.6" height="15.0" fill="rgb(241,9,1)" rx="2" ry="2" />
+<text  x="234.95" y="239.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (16 samples, 0.06%)</title><rect x="1130.1" y="453" width="0.7" height="15.0" fill="rgb(234,202,35)" rx="2" ry="2" />
+<text  x="1133.12" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::setHeaders (6 samples, 0.02%)</title><rect x="1120.3" y="421" width="0.3" height="15.0" fill="rgb(220,44,27)" rx="2" ry="2" />
+<text  x="1123.33" y="431.5" ></text>
+</g>
+<g >
+<title>digest (18 samples, 0.07%)</title><rect x="1102.7" y="309" width="0.8" height="15.0" fill="rgb(240,119,5)" rx="2" ry="2" />
+<text  x="1105.73" y="319.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer@anonymous::render (3 samples, 0.01%)</title><rect x="1189.1" y="453" width="0.1" height="15.0" fill="rgb(232,111,31)" rx="2" ry="2" />
+<text  x="1192.09" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (3 samples, 0.01%)</title><rect x="1136.6" y="405" width="0.1" height="15.0" fill="rgb(205,87,21)" rx="2" ry="2" />
+<text  x="1139.55" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (42 samples, 0.15%)</title><rect x="961.5" y="293" width="1.8" height="15.0" fill="rgb(225,108,27)" rx="2" ry="2" />
+<text  x="964.50" y="303.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (3 samples, 0.01%)</title><rect x="222.7" y="53" width="0.1" height="15.0" fill="rgb(242,229,18)" rx="2" ry="2" />
+<text  x="225.71" y="63.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (187 samples, 0.68%)</title><rect x="1093.8" y="309" width="8.1" height="15.0" fill="rgb(224,16,42)" rx="2" ry="2" />
+<text  x="1096.80" y="319.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (7 samples, 0.03%)</title><rect x="597.2" y="277" width="0.3" height="15.0" fill="rgb(242,108,2)" rx="2" ry="2" />
+<text  x="600.15" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Request::withAttribute (8 samples, 0.03%)</title><rect x="27.4" y="421" width="0.3" height="15.0" fill="rgb(245,158,8)" rx="2" ry="2" />
+<text  x="30.38" y="431.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (28 samples, 0.10%)</title><rect x="230.3" y="229" width="1.2" height="15.0" fill="rgb(254,190,46)" rx="2" ry="2" />
+<text  x="233.31" y="239.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (9 samples, 0.03%)</title><rect x="13.1" y="437" width="0.4" height="15.0" fill="rgb(235,0,23)" rx="2" ry="2" />
+<text  x="16.11" y="447.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::render (5 samples, 0.02%)</title><rect x="1128.7" y="341" width="0.2" height="15.0" fill="rgb(245,223,8)" rx="2" ry="2" />
+<text  x="1131.66" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (12 samples, 0.04%)</title><rect x="839.1" y="261" width="0.5" height="15.0" fill="rgb(214,211,30)" rx="2" ry="2" />
+<text  x="842.11" y="271.5" ></text>
+</g>
+<g >
+<title>Slim\Handlers\Strategies\RequestResponse::__invoke (7 samples, 0.03%)</title><rect x="1128.0" y="389" width="0.3" height="15.0" fill="rgb(213,92,45)" rx="2" ry="2" />
+<text  x="1130.97" y="399.5" ></text>
+</g>
+<g >
+<title>Slim\MiddlewareDispatcher::handle (25,306 samples, 92.51%)</title><rect x="18.6" y="469" width="1091.6" height="15.0" fill="rgb(211,119,19)" rx="2" ry="2" />
+<text  x="21.58" y="479.5" >Slim\MiddlewareDispatcher::handle</text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (42 samples, 0.15%)</title><rect x="961.5" y="325" width="1.8" height="15.0" fill="rgb(243,122,32)" rx="2" ry="2" />
+<text  x="964.50" y="335.5" ></text>
+</g>
+<g >
+<title>calculate_salt (19 samples, 0.07%)</title><rect x="1101.9" y="309" width="0.8" height="15.0" fill="rgb(242,105,52)" rx="2" ry="2" />
+<text  x="1104.91" y="319.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollector::createRoute (5 samples, 0.02%)</title><rect x="1138.0" y="453" width="0.2" height="15.0" fill="rgb(207,139,34)" rx="2" ry="2" />
+<text  x="1140.98" y="463.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (21 samples, 0.08%)</title><rect x="651.5" y="309" width="0.9" height="15.0" fill="rgb(228,149,9)" rx="2" ry="2" />
+<text  x="654.46" y="319.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (7 samples, 0.03%)</title><rect x="193.6" y="341" width="0.3" height="15.0" fill="rgb(250,70,7)" rx="2" ry="2" />
+<text  x="196.55" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="1136.6" y="357" width="0.1" height="15.0" fill="rgb(218,40,25)" rx="2" ry="2" />
+<text  x="1139.55" y="367.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::getDefinitionResolver (7 samples, 0.03%)</title><rect x="222.9" y="293" width="0.3" height="15.0" fill="rgb(230,141,30)" rx="2" ry="2" />
+<text  x="225.89" y="303.5" ></text>
+</g>
+<g >
+<title>class@anonymous::get_session_user (38 samples, 0.14%)</title><rect x="232.5" y="341" width="1.7" height="15.0" fill="rgb(244,17,50)" rx="2" ry="2" />
+<text  x="235.55" y="351.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (39 samples, 0.14%)</title><rect x="961.6" y="261" width="1.7" height="15.0" fill="rgb(243,125,53)" rx="2" ry="2" />
+<text  x="964.58" y="271.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (69 samples, 0.25%)</title><rect x="972.3" y="341" width="3.0" height="15.0" fill="rgb(223,85,48)" rx="2" ry="2" />
+<text  x="975.28" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (6 samples, 0.02%)</title><rect x="19.2" y="405" width="0.3" height="15.0" fill="rgb(221,40,3)" rx="2" ry="2" />
+<text  x="22.23" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (3 samples, 0.01%)</title><rect x="193.7" y="197" width="0.2" height="15.0" fill="rgb(249,10,28)" rx="2" ry="2" />
+<text  x="196.73" y="207.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (41 samples, 0.15%)</title><rect x="970.3" y="325" width="1.8" height="15.0" fill="rgb(222,20,34)" rx="2" ry="2" />
+<text  x="973.34" y="335.5" ></text>
+</g>
+<g >
+<title>class@anonymous::db_initialize (49 samples, 0.18%)</title><rect x="29.6" y="341" width="2.1" height="15.0" fill="rgb(252,142,4)" rx="2" ry="2" />
+<text  x="32.63" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (7 samples, 0.03%)</title><rect x="18.2" y="453" width="0.3" height="15.0" fill="rgb(209,152,26)" rx="2" ry="2" />
+<text  x="21.20" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (9 samples, 0.03%)</title><rect x="19.5" y="357" width="0.4" height="15.0" fill="rgb(236,14,53)" rx="2" ry="2" />
+<text  x="22.49" y="367.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="1116.1" y="405" width="0.1" height="15.0" fill="rgb(239,163,46)" rx="2" ry="2" />
+<text  x="1119.10" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Source\SourceChain::getDefinition (3 samples, 0.01%)</title><rect x="35.6" y="309" width="0.2" height="15.0" fill="rgb(225,129,20)" rx="2" ry="2" />
+<text  x="38.62" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (6 samples, 0.02%)</title><rect x="1121.2" y="405" width="0.3" height="15.0" fill="rgb(242,119,19)" rx="2" ry="2" />
+<text  x="1124.19" y="415.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (77 samples, 0.28%)</title><rect x="32.0" y="117" width="3.4" height="15.0" fill="rgb(248,23,20)" rx="2" ry="2" />
+<text  x="35.04" y="127.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::getData (7 samples, 0.03%)</title><rect x="24.8" y="325" width="0.3" height="15.0" fill="rgb(207,67,53)" rx="2" ry="2" />
+<text  x="27.80" y="335.5" ></text>
+</g>
+<g >
+<title>&lt;unknown&gt; (19 samples, 0.07%)</title><rect x="1187.8" y="517" width="0.9" height="15.0" fill="rgb(247,1,14)" rx="2" ry="2" />
+<text  x="1190.84" y="527.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Dispatcher::dispatch (163 samples, 0.60%)</title><rect x="20.4" y="389" width="7.0" height="15.0" fill="rgb(246,56,53)" rx="2" ry="2" />
+<text  x="23.35" y="399.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (37 samples, 0.14%)</title><rect x="961.7" y="101" width="1.6" height="15.0" fill="rgb(220,150,25)" rx="2" ry="2" />
+<text  x="964.67" y="111.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (38 samples, 0.14%)</title><rect x="166.1" y="341" width="1.7" height="15.0" fill="rgb(250,45,22)" rx="2" ry="2" />
+<text  x="169.12" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (3 samples, 0.01%)</title><rect x="1120.1" y="389" width="0.1" height="15.0" fill="rgb(249,126,35)" rx="2" ry="2" />
+<text  x="1123.12" y="399.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="12.8" y="453" width="0.2" height="15.0" fill="rgb(217,91,32)" rx="2" ry="2" />
+<text  x="15.85" y="463.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (4 samples, 0.01%)</title><rect x="1136.9" y="421" width="0.1" height="15.0" fill="rgb(217,205,6)" rx="2" ry="2" />
+<text  x="1139.85" y="431.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (42 samples, 0.15%)</title><rect x="903.8" y="341" width="1.8" height="15.0" fill="rgb(213,142,42)" rx="2" ry="2" />
+<text  x="906.82" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (7 samples, 0.03%)</title><rect x="1014.9" y="245" width="0.3" height="15.0" fill="rgb(232,77,40)" rx="2" ry="2" />
+<text  x="1017.86" y="255.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:223-226) (49 samples, 0.18%)</title><rect x="29.6" y="357" width="2.1" height="15.0" fill="rgb(219,80,53)" rx="2" ry="2" />
+<text  x="32.63" y="367.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (37 samples, 0.14%)</title><rect x="961.7" y="165" width="1.6" height="15.0" fill="rgb(245,5,45)" rx="2" ry="2" />
+<text  x="964.67" y="175.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (39 samples, 0.14%)</title><rect x="903.9" y="229" width="1.7" height="15.0" fill="rgb(222,120,49)" rx="2" ry="2" />
+<text  x="906.91" y="239.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (3 samples, 0.01%)</title><rect x="193.7" y="293" width="0.2" height="15.0" fill="rgb(244,26,12)" rx="2" ry="2" />
+<text  x="196.73" y="303.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (191 samples, 0.70%)</title><rect x="939.7" y="165" width="8.2" height="15.0" fill="rgb(243,167,9)" rx="2" ry="2" />
+<text  x="942.67" y="175.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (14 samples, 0.05%)</title><rect x="1135.2" y="421" width="0.6" height="15.0" fill="rgb(238,46,40)" rx="2" ry="2" />
+<text  x="1138.21" y="431.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (7 samples, 0.03%)</title><rect x="1014.9" y="261" width="0.3" height="15.0" fill="rgb(233,8,48)" rx="2" ry="2" />
+<text  x="1017.86" y="271.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (65 samples, 0.24%)</title><rect x="972.4" y="277" width="2.8" height="15.0" fill="rgb(239,148,37)" rx="2" ry="2" />
+<text  x="975.41" y="287.5" ></text>
+</g>
+<g >
+<title>file_exists (10 samples, 0.04%)</title><rect x="24.1" y="197" width="0.4" height="15.0" fill="rgb(244,85,27)" rx="2" ry="2" />
+<text  x="27.11" y="207.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (37 samples, 0.14%)</title><rect x="961.7" y="181" width="1.6" height="15.0" fill="rgb(248,49,30)" rx="2" ry="2" />
+<text  x="964.67" y="191.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (191 samples, 0.70%)</title><rect x="939.7" y="181" width="8.2" height="15.0" fill="rgb(232,214,26)" rx="2" ry="2" />
+<text  x="942.67" y="191.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::__construct (3 samples, 0.01%)</title><rect x="11.6" y="469" width="0.2" height="15.0" fill="rgb(254,81,5)" rx="2" ry="2" />
+<text  x="14.64" y="479.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetchAll (4 samples, 0.01%)</title><rect x="597.5" y="341" width="0.1" height="15.0" fill="rgb(252,125,52)" rx="2" ry="2" />
+<text  x="600.45" y="351.5" ></text>
+</g>
+<g >
+<title>spl_autoload_register (3 samples, 0.01%)</title><rect x="11.9" y="469" width="0.1" height="15.0" fill="rgb(232,78,21)" rx="2" ry="2" />
+<text  x="14.90" y="479.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (269 samples, 0.98%)</title><rect x="948.0" y="325" width="11.6" height="15.0" fill="rgb(235,42,14)" rx="2" ry="2" />
+<text  x="951.04" y="335.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Uri::__construct (18 samples, 0.07%)</title><rect x="1116.7" y="437" width="0.7" height="15.0" fill="rgb(219,76,52)" rx="2" ry="2" />
+<text  x="1119.67" y="447.5" ></text>
+</g>
+<g >
+<title>file_exists (8 samples, 0.03%)</title><rect x="19.5" y="341" width="0.3" height="15.0" fill="rgb(228,111,26)" rx="2" ry="2" />
+<text  x="22.49" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (15 samples, 0.05%)</title><rect x="231.9" y="261" width="0.6" height="15.0" fill="rgb(247,7,7)" rx="2" ry="2" />
+<text  x="234.86" y="271.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (27 samples, 0.10%)</title><rect x="230.3" y="181" width="1.2" height="15.0" fill="rgb(207,221,13)" rx="2" ry="2" />
+<text  x="233.35" y="191.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Message::withHeader (3 samples, 0.01%)</title><rect x="165.9" y="325" width="0.2" height="15.0" fill="rgb(245,208,52)" rx="2" ry="2" />
+<text  x="168.94" y="335.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::__construct (6 samples, 0.02%)</title><rect x="1120.3" y="437" width="0.3" height="15.0" fill="rgb(211,133,24)" rx="2" ry="2" />
+<text  x="1123.33" y="447.5" ></text>
+</g>
+<g >
+<title>file_exists (8 samples, 0.03%)</title><rect x="1116.3" y="341" width="0.4" height="15.0" fill="rgb(250,28,26)" rx="2" ry="2" />
+<text  x="1119.32" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollectorProxy::post (8 samples, 0.03%)</title><rect x="1137.8" y="501" width="0.4" height="15.0" fill="rgb(246,216,34)" rx="2" ry="2" />
+<text  x="1140.85" y="511.5" ></text>
+</g>
+<g >
+<title>file_exists (5 samples, 0.02%)</title><rect x="1121.2" y="373" width="0.2" height="15.0" fill="rgb(223,177,23)" rx="2" ry="2" />
+<text  x="1124.19" y="383.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (6 samples, 0.02%)</title><rect x="1132.8" y="405" width="0.2" height="15.0" fill="rgb(251,9,24)" rx="2" ry="2" />
+<text  x="1135.76" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (38 samples, 0.14%)</title><rect x="166.1" y="165" width="1.7" height="15.0" fill="rgb(231,111,30)" rx="2" ry="2" />
+<text  x="169.12" y="175.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetchTemplate (3 samples, 0.01%)</title><rect x="1189.1" y="405" width="0.1" height="15.0" fill="rgb(205,26,1)" rx="2" ry="2" />
+<text  x="1192.09" y="415.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (3 samples, 0.01%)</title><rect x="1065.5" y="309" width="0.1" height="15.0" fill="rgb(227,80,49)" rx="2" ry="2" />
+<text  x="1068.46" y="319.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (28 samples, 0.10%)</title><rect x="230.3" y="245" width="1.2" height="15.0" fill="rgb(231,1,1)" rx="2" ry="2" />
+<text  x="233.31" y="255.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetch (9 samples, 0.03%)</title><rect x="959.6" y="325" width="0.4" height="15.0" fill="rgb(239,104,12)" rx="2" ry="2" />
+<text  x="962.64" y="335.5" ></text>
+</g>
+<g >
+<title>digest (19 samples, 0.07%)</title><rect x="1101.9" y="293" width="0.8" height="15.0" fill="rgb(228,18,49)" rx="2" ry="2" />
+<text  x="1104.91" y="303.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="1134.5" y="373" width="0.2" height="15.0" fill="rgb(218,2,14)" rx="2" ry="2" />
+<text  x="1137.48" y="383.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (9 samples, 0.03%)</title><rect x="1133.1" y="405" width="0.4" height="15.0" fill="rgb(223,34,37)" rx="2" ry="2" />
+<text  x="1136.10" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (37 samples, 0.14%)</title><rect x="961.7" y="213" width="1.6" height="15.0" fill="rgb(249,115,48)" rx="2" ry="2" />
+<text  x="964.67" y="223.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (3 samples, 0.01%)</title><rect x="193.7" y="101" width="0.2" height="15.0" fill="rgb(231,76,1)" rx="2" ry="2" />
+<text  x="196.73" y="111.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (3 samples, 0.01%)</title><rect x="1136.9" y="373" width="0.1" height="15.0" fill="rgb(244,192,44)" rx="2" ry="2" />
+<text  x="1139.90" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (77 samples, 0.28%)</title><rect x="32.0" y="165" width="3.4" height="15.0" fill="rgb(242,136,28)" rx="2" ry="2" />
+<text  x="35.04" y="175.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (3 samples, 0.01%)</title><rect x="854.5" y="213" width="0.1" height="15.0" fill="rgb(218,226,1)" rx="2" ry="2" />
+<text  x="857.51" y="223.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (22 samples, 0.08%)</title><rect x="1108.3" y="341" width="0.9" height="15.0" fill="rgb(214,185,52)" rx="2" ry="2" />
+<text  x="1111.30" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (17 samples, 0.06%)</title><rect x="1114.6" y="357" width="0.7" height="15.0" fill="rgb(235,127,41)" rx="2" ry="2" />
+<text  x="1117.59" y="367.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetch (11 samples, 0.04%)</title><rect x="582.2" y="309" width="0.5" height="15.0" fill="rgb(253,153,42)" rx="2" ry="2" />
+<text  x="585.18" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (7 samples, 0.03%)</title><rect x="597.2" y="325" width="0.3" height="15.0" fill="rgb(246,141,33)" rx="2" ry="2" />
+<text  x="600.15" y="335.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (27 samples, 0.10%)</title><rect x="230.3" y="117" width="1.2" height="15.0" fill="rgb(228,56,15)" rx="2" ry="2" />
+<text  x="233.35" y="127.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (337 samples, 1.23%)</title><rect x="840.1" y="245" width="14.5" height="15.0" fill="rgb(235,224,50)" rx="2" ry="2" />
+<text  x="843.11" y="255.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (7 samples, 0.03%)</title><rect x="1137.4" y="405" width="0.3" height="15.0" fill="rgb(237,4,29)" rx="2" ry="2" />
+<text  x="1140.37" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::protectedIncludeScope (11 samples, 0.04%)</title><rect x="597.7" y="277" width="0.5" height="15.0" fill="rgb(249,94,17)" rx="2" ry="2" />
+<text  x="600.71" y="287.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (23 samples, 0.08%)</title><rect x="22.3" y="309" width="1.0" height="15.0" fill="rgb(209,2,46)" rx="2" ry="2" />
+<text  x="25.29" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (12 samples, 0.04%)</title><rect x="24.1" y="213" width="0.5" height="15.0" fill="rgb(209,93,41)" rx="2" ry="2" />
+<text  x="27.06" y="223.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::render (3 samples, 0.01%)</title><rect x="1189.1" y="437" width="0.1" height="15.0" fill="rgb(218,33,20)" rx="2" ry="2" />
+<text  x="1192.09" y="447.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (10 samples, 0.04%)</title><rect x="19.5" y="421" width="0.4" height="15.0" fill="rgb(219,28,19)" rx="2" ry="2" />
+<text  x="22.49" y="431.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:422-451) (205 samples, 0.75%)</title><rect x="961.5" y="357" width="8.8" height="15.0" fill="rgb(229,61,24)" rx="2" ry="2" />
+<text  x="964.45" y="367.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (7 samples, 0.03%)</title><rect x="1120.8" y="421" width="0.4" height="15.0" fill="rgb(211,84,19)" rx="2" ry="2" />
+<text  x="1123.85" y="431.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="1132.8" y="373" width="0.2" height="15.0" fill="rgb(214,143,20)" rx="2" ry="2" />
+<text  x="1135.80" y="383.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\ServerRequestCreatorFactory::attemptServerRequestCreatorDecoration (11 samples, 0.04%)</title><rect x="1121.7" y="453" width="0.4" height="15.0" fill="rgb(221,195,28)" rx="2" ry="2" />
+<text  x="1124.67" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (3 samples, 0.01%)</title><rect x="1136.6" y="373" width="0.1" height="15.0" fill="rgb(242,110,10)" rx="2" ry="2" />
+<text  x="1139.55" y="383.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (10 samples, 0.04%)</title><rect x="597.8" y="261" width="0.4" height="15.0" fill="rgb(245,33,4)" rx="2" ry="2" />
+<text  x="600.76" y="271.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (16 samples, 0.06%)</title><rect x="959.0" y="229" width="0.6" height="15.0" fill="rgb(238,55,5)" rx="2" ry="2" />
+<text  x="961.95" y="239.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (76 samples, 0.28%)</title><rect x="32.1" y="101" width="3.3" height="15.0" fill="rgb(220,212,38)" rx="2" ry="2" />
+<text  x="35.09" y="111.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (3 samples, 0.01%)</title><rect x="839.6" y="245" width="0.2" height="15.0" fill="rgb(211,80,3)" rx="2" ry="2" />
+<text  x="842.63" y="255.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollectorProxy::map (18 samples, 0.07%)</title><rect x="1137.1" y="485" width="0.7" height="15.0" fill="rgb(242,74,18)" rx="2" ry="2" />
+<text  x="1140.07" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (12 samples, 0.04%)</title><rect x="20.5" y="373" width="0.5" height="15.0" fill="rgb(233,87,50)" rx="2" ry="2" />
+<text  x="23.48" y="383.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (10 samples, 0.04%)</title><rect x="18.2" y="485" width="0.4" height="15.0" fill="rgb(245,121,35)" rx="2" ry="2" />
+<text  x="21.15" y="495.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (38 samples, 0.14%)</title><rect x="166.1" y="245" width="1.7" height="15.0" fill="rgb(207,159,13)" rx="2" ry="2" />
+<text  x="169.12" y="255.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (38 samples, 0.14%)</title><rect x="166.1" y="325" width="1.7" height="15.0" fill="rgb(205,221,39)" rx="2" ry="2" />
+<text  x="169.12" y="335.5" ></text>
+</g>
+<g >
+<title>file_exists (5 samples, 0.02%)</title><rect x="1109.3" y="261" width="0.2" height="15.0" fill="rgb(207,101,31)" rx="2" ry="2" />
+<text  x="1112.33" y="271.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="583.0" y="245" width="0.1" height="15.0" fill="rgb(237,162,22)" rx="2" ry="2" />
+<text  x="585.96" y="255.5" ></text>
+</g>
+<g >
+<title>digest (207 samples, 0.76%)</title><rect x="184.6" y="325" width="9.0" height="15.0" fill="rgb(254,177,18)" rx="2" ry="2" />
+<text  x="187.62" y="335.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::validateHeader (11 samples, 0.04%)</title><rect x="1118.4" y="373" width="0.5" height="15.0" fill="rgb(246,168,49)" rx="2" ry="2" />
+<text  x="1121.39" y="383.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (17 samples, 0.06%)</title><rect x="15.7" y="389" width="0.8" height="15.0" fill="rgb(214,81,1)" rx="2" ry="2" />
+<text  x="18.74" y="399.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (16 samples, 0.06%)</title><rect x="959.0" y="165" width="0.6" height="15.0" fill="rgb(219,71,51)" rx="2" ry="2" />
+<text  x="961.95" y="175.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::normalizeHeaderName (5 samples, 0.02%)</title><rect x="1128.7" y="421" width="0.2" height="15.0" fill="rgb(225,148,35)" rx="2" ry="2" />
+<text  x="1131.66" y="431.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (11 samples, 0.04%)</title><rect x="13.1" y="469" width="0.4" height="15.0" fill="rgb(215,92,24)" rx="2" ry="2" />
+<text  x="16.06" y="479.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (295 samples, 1.08%)</title><rect x="36.3" y="277" width="12.7" height="15.0" fill="rgb(205,158,48)" rx="2" ry="2" />
+<text  x="39.31" y="287.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (12 samples, 0.04%)</title><rect x="1134.2" y="453" width="0.5" height="15.0" fill="rgb(229,145,10)" rx="2" ry="2" />
+<text  x="1137.18" y="463.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (64 samples, 0.23%)</title><rect x="972.5" y="245" width="2.7" height="15.0" fill="rgb(219,120,4)" rx="2" ry="2" />
+<text  x="975.45" y="255.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (8 samples, 0.03%)</title><rect x="1133.5" y="421" width="0.3" height="15.0" fill="rgb(242,137,2)" rx="2" ry="2" />
+<text  x="1136.49" y="431.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (290 samples, 1.06%)</title><rect x="36.5" y="229" width="12.5" height="15.0" fill="rgb(212,75,7)" rx="2" ry="2" />
+<text  x="39.53" y="239.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (18 samples, 0.07%)</title><rect x="1114.6" y="389" width="0.7" height="15.0" fill="rgb(211,106,52)" rx="2" ry="2" />
+<text  x="1117.55" y="399.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (608 samples, 2.22%)</title><rect x="196.6" y="197" width="26.2" height="15.0" fill="rgb(240,38,35)" rx="2" ry="2" />
+<text  x="199.62" y="207.5" >D..</text>
+</g>
+<g >
+<title>PDO::__construct (37 samples, 0.14%)</title><rect x="166.2" y="101" width="1.6" height="15.0" fill="rgb(248,15,13)" rx="2" ry="2" />
+<text  x="169.16" y="111.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::createFromGlobals (33 samples, 0.12%)</title><rect x="1117.5" y="453" width="1.5" height="15.0" fill="rgb(219,216,38)" rx="2" ry="2" />
+<text  x="1120.53" y="463.5" ></text>
+</g>
+<g >
+<title>escape_html (5 samples, 0.02%)</title><rect x="232.2" y="197" width="0.3" height="15.0" fill="rgb(252,163,0)" rx="2" ry="2" />
+<text  x="235.25" y="207.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (14 samples, 0.05%)</title><rect x="1135.2" y="437" width="0.6" height="15.0" fill="rgb(234,188,46)" rx="2" ry="2" />
+<text  x="1138.21" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (3 samples, 0.01%)</title><rect x="583.0" y="277" width="0.1" height="15.0" fill="rgb(223,49,23)" rx="2" ry="2" />
+<text  x="585.96" y="287.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (3 samples, 0.01%)</title><rect x="222.7" y="85" width="0.1" height="15.0" fill="rgb(212,153,50)" rx="2" ry="2" />
+<text  x="225.71" y="95.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (39 samples, 0.14%)</title><rect x="903.9" y="181" width="1.7" height="15.0" fill="rgb(229,178,12)" rx="2" ry="2" />
+<text  x="906.91" y="191.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\Psr17\Psr17Factory::isStreamFactoryAvailable (8 samples, 0.03%)</title><rect x="1136.7" y="469" width="0.3" height="15.0" fill="rgb(233,38,22)" rx="2" ry="2" />
+<text  x="1139.68" y="479.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="1121.5" y="325" width="0.1" height="15.0" fill="rgb(252,73,17)" rx="2" ry="2" />
+<text  x="1124.50" y="335.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::setHeader (7 samples, 0.03%)</title><rect x="1119.2" y="437" width="0.3" height="15.0" fill="rgb(235,77,27)" rx="2" ry="2" />
+<text  x="1122.17" y="447.5" ></text>
+</g>
+<g >
+<title>file_exists (10 samples, 0.04%)</title><rect x="195.0" y="229" width="0.5" height="15.0" fill="rgb(234,49,22)" rx="2" ry="2" />
+<text  x="198.02" y="239.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (288 samples, 1.05%)</title><rect x="36.6" y="133" width="12.4" height="15.0" fill="rgb(252,195,1)" rx="2" ry="2" />
+<text  x="39.62" y="143.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (37 samples, 0.14%)</title><rect x="961.7" y="149" width="1.6" height="15.0" fill="rgb(238,159,3)" rx="2" ry="2" />
+<text  x="964.67" y="159.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (8 samples, 0.03%)</title><rect x="1137.3" y="421" width="0.4" height="15.0" fill="rgb(220,210,2)" rx="2" ry="2" />
+<text  x="1140.33" y="431.5" ></text>
+</g>
+<g >
+<title>class@anonymous::make_posts (685 samples, 2.50%)</title><rect x="1059.0" y="341" width="29.5" height="15.0" fill="rgb(223,160,37)" rx="2" ry="2" />
+<text  x="1061.99" y="351.5" >cl..</text>
+</g>
+<g >
+<title>&lt;main&gt; (3 samples, 0.01%)</title><rect x="24.6" y="213" width="0.2" height="15.0" fill="rgb(214,205,13)" rx="2" ry="2" />
+<text  x="27.62" y="223.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (364 samples, 1.33%)</title><rect x="839.0" y="309" width="15.7" height="15.0" fill="rgb(221,192,50)" rx="2" ry="2" />
+<text  x="842.03" y="319.5" ></text>
+</g>
+<g >
+<title>file_exists (15 samples, 0.05%)</title><rect x="1130.9" y="421" width="0.7" height="15.0" fill="rgb(243,219,14)" rx="2" ry="2" />
+<text  x="1133.94" y="431.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (4 samples, 0.01%)</title><rect x="1121.5" y="389" width="0.2" height="15.0" fill="rgb(212,89,15)" rx="2" ry="2" />
+<text  x="1124.50" y="399.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (308 samples, 1.13%)</title><rect x="35.8" y="293" width="13.2" height="15.0" fill="rgb(248,100,47)" rx="2" ry="2" />
+<text  x="38.75" y="303.5" ></text>
+</g>
+<g >
+<title>file_exists (9 samples, 0.03%)</title><rect x="839.2" y="229" width="0.4" height="15.0" fill="rgb(223,66,38)" rx="2" ry="2" />
+<text  x="842.20" y="239.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (36 samples, 0.13%)</title><rect x="164.4" y="325" width="1.5" height="15.0" fill="rgb(227,205,42)" rx="2" ry="2" />
+<text  x="167.39" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (315 samples, 1.15%)</title><rect x="35.6" y="341" width="13.6" height="15.0" fill="rgb(225,184,22)" rx="2" ry="2" />
+<text  x="38.62" y="351.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (4 samples, 0.01%)</title><rect x="195.5" y="261" width="0.1" height="15.0" fill="rgb(239,163,44)" rx="2" ry="2" />
+<text  x="198.45" y="271.5" ></text>
+</g>
+<g >
+<title>shell_exec (206 samples, 0.75%)</title><rect x="184.7" y="309" width="8.9" height="15.0" fill="rgb(253,206,13)" rx="2" ry="2" />
+<text  x="187.67" y="319.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Route::handle (5 samples, 0.02%)</title><rect x="1189.1" y="501" width="0.2" height="15.0" fill="rgb(229,164,53)" rx="2" ry="2" />
+<text  x="1192.09" y="511.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::isSeekable (7 samples, 0.03%)</title><rect x="1115.5" y="421" width="0.3" height="15.0" fill="rgb(239,69,50)" rx="2" ry="2" />
+<text  x="1118.46" y="431.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (16 samples, 0.06%)</title><rect x="959.0" y="117" width="0.6" height="15.0" fill="rgb(225,35,41)" rx="2" ry="2" />
+<text  x="961.95" y="127.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (6 samples, 0.02%)</title><rect x="12.7" y="485" width="0.3" height="15.0" fill="rgb(236,189,35)" rx="2" ry="2" />
+<text  x="15.72" y="495.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (273 samples, 1.00%)</title><rect x="582.8" y="293" width="11.8" height="15.0" fill="rgb(251,95,23)" rx="2" ry="2" />
+<text  x="585.83" y="303.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (916 samples, 3.35%)</title><rect x="975.3" y="341" width="39.6" height="15.0" fill="rgb(215,188,30)" rx="2" ry="2" />
+<text  x="978.34" y="351.5" >PDO..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (25 samples, 0.09%)</title><rect x="1112.0" y="421" width="1.1" height="15.0" fill="rgb(205,196,47)" rx="2" ry="2" />
+<text  x="1115.01" y="431.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (9 samples, 0.03%)</title><rect x="19.5" y="405" width="0.4" height="15.0" fill="rgb(218,16,30)" rx="2" ry="2" />
+<text  x="22.49" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::eof (13 samples, 0.05%)</title><rect x="1127.8" y="437" width="0.6" height="15.0" fill="rgb(248,92,39)" rx="2" ry="2" />
+<text  x="1130.84" y="447.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (16 samples, 0.06%)</title><rect x="959.0" y="197" width="0.6" height="15.0" fill="rgb(211,110,6)" rx="2" ry="2" />
+<text  x="961.95" y="207.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (288 samples, 1.05%)</title><rect x="36.6" y="117" width="12.4" height="15.0" fill="rgb(207,91,33)" rx="2" ry="2" />
+<text  x="39.62" y="127.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (16 samples, 0.06%)</title><rect x="959.0" y="149" width="0.6" height="15.0" fill="rgb(212,104,46)" rx="2" ry="2" />
+<text  x="961.95" y="159.5" ></text>
+</g>
+<g >
+<title>FastRoute\RouteCollector::addRoute (5 samples, 0.02%)</title><rect x="21.5" y="325" width="0.2" height="15.0" fill="rgb(231,9,10)" rx="2" ry="2" />
+<text  x="24.47" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (85 samples, 0.31%)</title><rect x="31.7" y="325" width="3.7" height="15.0" fill="rgb(242,4,31)" rx="2" ry="2" />
+<text  x="34.74" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (3 samples, 0.01%)</title><rect x="15.1" y="437" width="0.1" height="15.0" fill="rgb(215,128,39)" rx="2" ry="2" />
+<text  x="18.09" y="447.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (4 samples, 0.01%)</title><rect x="48.9" y="69" width="0.1" height="15.0" fill="rgb(224,106,25)" rx="2" ry="2" />
+<text  x="51.87" y="79.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (204 samples, 0.75%)</title><rect x="939.2" y="325" width="8.8" height="15.0" fill="rgb(225,24,49)" rx="2" ry="2" />
+<text  x="942.19" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (16 samples, 0.06%)</title><rect x="959.0" y="181" width="0.6" height="15.0" fill="rgb(248,46,10)" rx="2" ry="2" />
+<text  x="961.95" y="191.5" ></text>
+</g>
+<g >
+<title>class@anonymous::make_posts (5,574 samples, 20.38%)</title><rect x="598.3" y="341" width="240.4" height="15.0" fill="rgb(247,104,39)" rx="2" ry="2" />
+<text  x="601.27" y="351.5" >class@anonymous::make_posts</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (9 samples, 0.03%)</title><rect x="15.3" y="437" width="0.4" height="15.0" fill="rgb(236,24,42)" rx="2" ry="2" />
+<text  x="18.26" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (3 samples, 0.01%)</title><rect x="24.6" y="181" width="0.2" height="15.0" fill="rgb(209,107,44)" rx="2" ry="2" />
+<text  x="27.62" y="191.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (41 samples, 0.15%)</title><rect x="970.3" y="293" width="1.8" height="15.0" fill="rgb(249,68,47)" rx="2" ry="2" />
+<text  x="973.34" y="303.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (7 samples, 0.03%)</title><rect x="647.4" y="309" width="0.3" height="15.0" fill="rgb(206,83,28)" rx="2" ry="2" />
+<text  x="650.41" y="319.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (3 samples, 0.01%)</title><rect x="1120.1" y="421" width="0.1" height="15.0" fill="rgb(228,104,36)" rx="2" ry="2" />
+<text  x="1123.12" y="431.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (3 samples, 0.01%)</title><rect x="193.7" y="149" width="0.2" height="15.0" fill="rgb(207,165,10)" rx="2" ry="2" />
+<text  x="196.73" y="159.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (7 samples, 0.03%)</title><rect x="1136.4" y="437" width="0.3" height="15.0" fill="rgb(241,159,2)" rx="2" ry="2" />
+<text  x="1139.38" y="447.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::isStaticRoute (3 samples, 0.01%)</title><rect x="26.4" y="293" width="0.1" height="15.0" fill="rgb(230,187,45)" rx="2" ry="2" />
+<text  x="29.39" y="303.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="24.6" y="149" width="0.2" height="15.0" fill="rgb(208,213,26)" rx="2" ry="2" />
+<text  x="27.62" y="159.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (5 samples, 0.02%)</title><rect x="1120.9" y="389" width="0.3" height="15.0" fill="rgb(207,94,8)" rx="2" ry="2" />
+<text  x="1123.94" y="399.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (17 samples, 0.06%)</title><rect x="1103.8" y="325" width="0.7" height="15.0" fill="rgb(244,109,24)" rx="2" ry="2" />
+<text  x="1106.77" y="335.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (16 samples, 0.06%)</title><rect x="24.1" y="261" width="0.7" height="15.0" fill="rgb(228,178,1)" rx="2" ry="2" />
+<text  x="27.06" y="271.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (17 samples, 0.06%)</title><rect x="194.9" y="277" width="0.7" height="15.0" fill="rgb(207,139,11)" rx="2" ry="2" />
+<text  x="197.89" y="287.5" ></text>
+</g>
+<g >
+<title>digest (5 samples, 0.02%)</title><rect x="1090.1" y="309" width="0.3" height="15.0" fill="rgb(222,148,21)" rx="2" ry="2" />
+<text  x="1093.14" y="319.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:307-321) (3 samples, 0.01%)</title><rect x="1189.1" y="469" width="0.1" height="15.0" fill="rgb(213,119,5)" rx="2" ry="2" />
+<text  x="1192.09" y="479.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer@anonymous::render (7 samples, 0.03%)</title><rect x="1014.9" y="341" width="0.3" height="15.0" fill="rgb(240,215,9)" rx="2" ry="2" />
+<text  x="1017.86" y="351.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (3 samples, 0.01%)</title><rect x="48.9" y="53" width="0.1" height="15.0" fill="rgb(243,115,51)" rx="2" ry="2" />
+<text  x="51.91" y="63.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (5 samples, 0.02%)</title><rect x="1136.5" y="421" width="0.2" height="15.0" fill="rgb(232,14,35)" rx="2" ry="2" />
+<text  x="1139.47" y="431.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (3 samples, 0.01%)</title><rect x="195.5" y="245" width="0.1" height="15.0" fill="rgb(247,157,5)" rx="2" ry="2" />
+<text  x="198.49" y="255.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::read (18 samples, 0.07%)</title><rect x="1127.8" y="453" width="0.7" height="15.0" fill="rgb(239,55,33)" rx="2" ry="2" />
+<text  x="1130.75" y="463.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (38 samples, 0.14%)</title><rect x="166.1" y="149" width="1.7" height="15.0" fill="rgb(243,89,25)" rx="2" ry="2" />
+<text  x="169.12" y="159.5" ></text>
+</g>
+<g >
+<title>digest (5 samples, 0.02%)</title><rect x="1090.4" y="325" width="0.2" height="15.0" fill="rgb(234,189,54)" rx="2" ry="2" />
+<text  x="1093.35" y="335.5" ></text>
+</g>
+<g >
+<title>file_exists (5 samples, 0.02%)</title><rect x="1137.4" y="341" width="0.2" height="15.0" fill="rgb(230,125,10)" rx="2" ry="2" />
+<text  x="1140.41" y="351.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:453-471) (45 samples, 0.16%)</title><rect x="970.3" y="357" width="1.9" height="15.0" fill="rgb(235,93,5)" rx="2" ry="2" />
+<text  x="973.30" y="367.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Route::__construct (4 samples, 0.01%)</title><rect x="1137.7" y="437" width="0.1" height="15.0" fill="rgb(217,159,1)" rx="2" ry="2" />
+<text  x="1140.67" y="447.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (37 samples, 0.14%)</title><rect x="961.7" y="229" width="1.6" height="15.0" fill="rgb(226,58,25)" rx="2" ry="2" />
+<text  x="964.67" y="239.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::protectedIncludeScope (7 samples, 0.03%)</title><rect x="1014.9" y="277" width="0.3" height="15.0" fill="rgb(214,111,37)" rx="2" ry="2" />
+<text  x="1017.86" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Handlers\Strategies\RequestResponse::__invoke (24,999 samples, 91.39%)</title><rect x="29.2" y="373" width="1078.4" height="15.0" fill="rgb(206,51,22)" rx="2" ry="2" />
+<text  x="32.15" y="383.5" >Slim\Handlers\Strategies\RequestResponse::__invoke</text>
+</g>
+<g >
+<title>Invoker\Invoker::call (345 samples, 1.26%)</title><rect x="839.8" y="277" width="14.9" height="15.0" fill="rgb(207,65,27)" rx="2" ry="2" />
+<text  x="842.80" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::prepareHeader (5 samples, 0.02%)</title><rect x="1119.3" y="421" width="0.2" height="15.0" fill="rgb(209,195,19)" rx="2" ry="2" />
+<text  x="1122.25" y="431.5" ></text>
+</g>
+<g >
+<title>PDO::prepare (7 samples, 0.03%)</title><rect x="651.2" y="309" width="0.3" height="15.0" fill="rgb(231,91,26)" rx="2" ry="2" />
+<text  x="654.16" y="319.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (13 samples, 0.05%)</title><rect x="361.6" y="309" width="0.5" height="15.0" fill="rgb(230,200,12)" rx="2" ry="2" />
+<text  x="364.58" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="1120.1" y="373" width="0.1" height="15.0" fill="rgb(211,139,12)" rx="2" ry="2" />
+<text  x="1123.12" y="383.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Dispatcher::{closure}(/home/isucon/private_isu/webapp/php/vendor/slim/slim/Slim/Routing/Dispatcher.php:30-36) (19 samples, 0.07%)</title><rect x="1119.9" y="469" width="0.8" height="15.0" fill="rgb(219,148,26)" rx="2" ry="2" />
+<text  x="1122.90" y="479.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (6 samples, 0.02%)</title><rect x="222.9" y="277" width="0.3" height="15.0" fill="rgb(218,99,24)" rx="2" ry="2" />
+<text  x="225.93" y="287.5" ></text>
+</g>
+<g >
+<title>file_exists (15 samples, 0.05%)</title><rect x="1114.6" y="309" width="0.7" height="15.0" fill="rgb(236,119,6)" rx="2" ry="2" />
+<text  x="1117.64" y="319.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Factory\ServerRequestFactory::{closure}(/home/isucon/private_isu/webapp/php/vendor/slim/psr7/src/Factory/ServerRequestFactory.php:79-109) (346 samples, 1.26%)</title><rect x="1088.6" y="357" width="14.9" height="15.0" fill="rgb(226,7,14)" rx="2" ry="2" />
+<text  x="1091.58" y="367.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetchTemplate (7 samples, 0.03%)</title><rect x="1014.9" y="293" width="0.3" height="15.0" fill="rgb(236,181,24)" rx="2" ry="2" />
+<text  x="1017.86" y="303.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (7 samples, 0.03%)</title><rect x="1135.5" y="405" width="0.3" height="15.0" fill="rgb(216,68,4)" rx="2" ry="2" />
+<text  x="1138.52" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (3 samples, 0.01%)</title><rect x="193.7" y="165" width="0.2" height="15.0" fill="rgb(216,31,28)" rx="2" ry="2" />
+<text  x="196.73" y="175.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (7 samples, 0.03%)</title><rect x="597.2" y="293" width="0.3" height="15.0" fill="rgb(216,109,10)" rx="2" ry="2" />
+<text  x="600.15" y="303.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (4 samples, 0.01%)</title><rect x="1121.7" y="437" width="0.1" height="15.0" fill="rgb(250,93,16)" rx="2" ry="2" />
+<text  x="1124.67" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (17 samples, 0.06%)</title><rect x="15.7" y="405" width="0.8" height="15.0" fill="rgb(249,66,3)" rx="2" ry="2" />
+<text  x="18.74" y="415.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:228-236) (86 samples, 0.31%)</title><rect x="31.7" y="357" width="3.8" height="15.0" fill="rgb(215,3,51)" rx="2" ry="2" />
+<text  x="34.74" y="367.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::buildRegexForRoute (7 samples, 0.03%)</title><rect x="26.0" y="277" width="0.3" height="15.0" fill="rgb(228,178,43)" rx="2" ry="2" />
+<text  x="29.05" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer@anonymous::render (15 samples, 0.05%)</title><rect x="597.6" y="341" width="0.7" height="15.0" fill="rgb(232,195,28)" rx="2" ry="2" />
+<text  x="600.63" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (81 samples, 0.30%)</title><rect x="1111.8" y="453" width="3.5" height="15.0" fill="rgb(245,83,22)" rx="2" ry="2" />
+<text  x="1114.83" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="1136.1" y="389" width="0.1" height="15.0" fill="rgb(226,192,27)" rx="2" ry="2" />
+<text  x="1139.08" y="399.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="1134.2" y="421" width="0.2" height="15.0" fill="rgb(235,13,27)" rx="2" ry="2" />
+<text  x="1137.22" y="431.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (29 samples, 0.11%)</title><rect x="15.7" y="453" width="1.2" height="15.0" fill="rgb(240,175,14)" rx="2" ry="2" />
+<text  x="18.65" y="463.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (9 samples, 0.03%)</title><rect x="16.5" y="389" width="0.4" height="15.0" fill="rgb(253,183,10)" rx="2" ry="2" />
+<text  x="19.47" y="399.5" ></text>
+</g>
+<g >
+<title>Invoker\ParameterResolver\ResolverChain::getParameters (6 samples, 0.02%)</title><rect x="195.9" y="261" width="0.2" height="15.0" fill="rgb(208,220,30)" rx="2" ry="2" />
+<text  x="198.88" y="271.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::addVariableRoute (14 samples, 0.05%)</title><rect x="25.8" y="293" width="0.6" height="15.0" fill="rgb(224,93,25)" rx="2" ry="2" />
+<text  x="28.79" y="303.5" ></text>
+</g>
+<g >
+<title>DI\Container::set (12 samples, 0.04%)</title><rect x="17.1" y="501" width="0.5" height="15.0" fill="rgb(249,225,27)" rx="2" ry="2" />
+<text  x="20.12" y="511.5" ></text>
+</g>
+<g >
+<title>DI\Container::__construct (83 samples, 0.30%)</title><rect x="13.5" y="501" width="3.6" height="15.0" fill="rgb(211,224,46)" rx="2" ry="2" />
+<text  x="16.54" y="511.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (7 samples, 0.03%)</title><rect x="1135.2" y="389" width="0.3" height="15.0" fill="rgb(235,109,30)" rx="2" ry="2" />
+<text  x="1138.21" y="399.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollector::map (6 samples, 0.02%)</title><rect x="1137.9" y="469" width="0.3" height="15.0" fill="rgb(226,147,16)" rx="2" ry="2" />
+<text  x="1140.93" y="479.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Response::__construct (8 samples, 0.03%)</title><rect x="1109.6" y="357" width="0.3" height="15.0" fill="rgb(237,224,44)" rx="2" ry="2" />
+<text  x="1112.59" y="367.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (77 samples, 0.28%)</title><rect x="32.0" y="197" width="3.4" height="15.0" fill="rgb(250,30,24)" rx="2" ry="2" />
+<text  x="35.04" y="207.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ComposerStaticInitf3b3a0107550f1c7053a4709b7059107::getInitializer (3 samples, 0.01%)</title><rect x="11.8" y="469" width="0.1" height="15.0" fill="rgb(244,102,18)" rx="2" ry="2" />
+<text  x="14.77" y="479.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (33 samples, 0.12%)</title><rect x="23.3" y="293" width="1.5" height="15.0" fill="rgb(208,107,16)" rx="2" ry="2" />
+<text  x="26.33" y="303.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer@anonymous::render (18 samples, 0.07%)</title><rect x="231.8" y="341" width="0.7" height="15.0" fill="rgb(248,170,35)" rx="2" ry="2" />
+<text  x="234.77" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (12 samples, 0.04%)</title><rect x="194.9" y="261" width="0.6" height="15.0" fill="rgb(214,202,8)" rx="2" ry="2" />
+<text  x="197.93" y="271.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (15 samples, 0.05%)</title><rect x="1132.4" y="453" width="0.6" height="15.0" fill="rgb(247,18,2)" rx="2" ry="2" />
+<text  x="1135.37" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Dispatcher::createDispatcher (146 samples, 0.53%)</title><rect x="21.0" y="373" width="6.3" height="15.0" fill="rgb(253,161,53)" rx="2" ry="2" />
+<text  x="24.00" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (38 samples, 0.14%)</title><rect x="166.1" y="293" width="1.7" height="15.0" fill="rgb(214,41,37)" rx="2" ry="2" />
+<text  x="169.12" y="303.5" ></text>
+</g>
+<g >
+<title>PDO::query (49 samples, 0.18%)</title><rect x="29.6" y="325" width="2.1" height="15.0" fill="rgb(230,123,20)" rx="2" ry="2" />
+<text  x="32.63" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (38 samples, 0.14%)</title><rect x="166.1" y="197" width="1.7" height="15.0" fill="rgb(239,203,29)" rx="2" ry="2" />
+<text  x="169.12" y="207.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:307-321) (9,013 samples, 32.95%)</title><rect x="193.9" y="357" width="388.8" height="15.0" fill="rgb(236,162,52)" rx="2" ry="2" />
+<text  x="196.90" y="367.5" >Closure::{closure}(/home/isucon/private_isu/webapp/p..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (6 samples, 0.02%)</title><rect x="1121.2" y="389" width="0.3" height="15.0" fill="rgb(215,193,39)" rx="2" ry="2" />
+<text  x="1124.19" y="399.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (39 samples, 0.14%)</title><rect x="903.9" y="117" width="1.7" height="15.0" fill="rgb(247,178,13)" rx="2" ry="2" />
+<text  x="906.91" y="127.5" ></text>
+</g>
+<g >
+<title>class@anonymous::make_posts (8,079 samples, 29.53%)</title><rect x="234.2" y="341" width="348.5" height="15.0" fill="rgb(238,136,52)" rx="2" ry="2" />
+<text  x="237.19" y="351.5" >class@anonymous::make_posts</text>
+</g>
+<g >
+<title>Slim\App::handle (25,306 samples, 92.51%)</title><rect x="18.6" y="485" width="1091.6" height="15.0" fill="rgb(236,25,11)" rx="2" ry="2" />
+<text  x="21.58" y="495.5" >Slim\App::handle</text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::__construct (3 samples, 0.01%)</title><rect x="1111.0" y="437" width="0.1" height="15.0" fill="rgb(232,132,11)" rx="2" ry="2" />
+<text  x="1113.97" y="447.5" ></text>
+</g>
+<g >
+<title>shell_exec (1,250 samples, 4.57%)</title><rect x="110.5" y="293" width="53.9" height="15.0" fill="rgb(248,125,9)" rx="2" ry="2" />
+<text  x="113.47" y="303.5" >shell..</text>
+</g>
+<g >
+<title>Slim\Factory\Psr17\Psr17Factory::isResponseFactoryAvailable (9 samples, 0.03%)</title><rect x="1136.3" y="469" width="0.4" height="15.0" fill="rgb(216,113,46)" rx="2" ry="2" />
+<text  x="1139.29" y="479.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetchAll (5 samples, 0.02%)</title><rect x="231.6" y="341" width="0.2" height="15.0" fill="rgb(207,173,22)" rx="2" ry="2" />
+<text  x="234.56" y="351.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (18 samples, 0.07%)</title><rect x="11.4" y="501" width="0.8" height="15.0" fill="rgb(253,193,14)" rx="2" ry="2" />
+<text  x="14.42" y="511.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (4,304 samples, 15.73%)</title><rect x="652.4" y="309" width="185.6" height="15.0" fill="rgb(230,222,51)" rx="2" ry="2" />
+<text  x="655.37" y="319.5" >PDOStatement::execute</text>
+</g>
+<g >
+<title>Slim\Routing\RouteResolver::__construct (12 samples, 0.04%)</title><rect x="1134.2" y="469" width="0.5" height="15.0" fill="rgb(224,217,43)" rx="2" ry="2" />
+<text  x="1137.18" y="479.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (61 samples, 0.22%)</title><rect x="1104.5" y="309" width="2.7" height="15.0" fill="rgb(207,150,21)" rx="2" ry="2" />
+<text  x="1107.54" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (5 samples, 0.02%)</title><rect x="48.8" y="85" width="0.2" height="15.0" fill="rgb(236,85,28)" rx="2" ry="2" />
+<text  x="51.82" y="95.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (3 samples, 0.01%)</title><rect x="1120.1" y="437" width="0.1" height="15.0" fill="rgb(212,68,47)" rx="2" ry="2" />
+<text  x="1123.12" y="447.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Factory\ResponseFactory::createResponse (55 samples, 0.20%)</title><rect x="1107.6" y="373" width="2.3" height="15.0" fill="rgb(249,54,2)" rx="2" ry="2" />
+<text  x="1110.56" y="383.5" ></text>
+</g>
+<g >
+<title>Invoker\ParameterResolver\ResolverChain::getParameters (3 samples, 0.01%)</title><rect x="583.3" y="261" width="0.1" height="15.0" fill="rgb(242,28,12)" rx="2" ry="2" />
+<text  x="586.26" y="271.5" ></text>
+</g>
+<g >
+<title>shell_exec (4 samples, 0.01%)</title><rect x="1107.4" y="293" width="0.2" height="15.0" fill="rgb(244,128,2)" rx="2" ry="2" />
+<text  x="1110.39" y="303.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (10 samples, 0.04%)</title><rect x="597.8" y="245" width="0.4" height="15.0" fill="rgb(219,79,11)" rx="2" ry="2" />
+<text  x="600.76" y="255.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (38 samples, 0.14%)</title><rect x="970.5" y="101" width="1.6" height="15.0" fill="rgb(249,24,2)" rx="2" ry="2" />
+<text  x="973.47" y="111.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (38 samples, 0.14%)</title><rect x="166.1" y="133" width="1.7" height="15.0" fill="rgb(239,187,1)" rx="2" ry="2" />
+<text  x="169.12" y="143.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (7 samples, 0.03%)</title><rect x="1134.8" y="453" width="0.3" height="15.0" fill="rgb(247,158,50)" rx="2" ry="2" />
+<text  x="1137.83" y="463.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (65 samples, 0.24%)</title><rect x="972.4" y="261" width="2.8" height="15.0" fill="rgb(250,213,49)" rx="2" ry="2" />
+<text  x="975.41" y="271.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="1136.7" y="421" width="0.2" height="15.0" fill="rgb(251,91,52)" rx="2" ry="2" />
+<text  x="1139.68" y="431.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (8 samples, 0.03%)</title><rect x="18.2" y="469" width="0.3" height="15.0" fill="rgb(229,105,11)" rx="2" ry="2" />
+<text  x="21.15" y="479.5" ></text>
+</g>
+<g >
+<title>digest (4 samples, 0.01%)</title><rect x="1107.4" y="309" width="0.2" height="15.0" fill="rgb(213,163,34)" rx="2" ry="2" />
+<text  x="1110.39" y="319.5" ></text>
+</g>
+<g >
+<title>redirect (4 samples, 0.01%)</title><rect x="165.9" y="341" width="0.2" height="15.0" fill="rgb(236,132,45)" rx="2" ry="2" />
+<text  x="168.94" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (7 samples, 0.03%)</title><rect x="35.9" y="261" width="0.3" height="15.0" fill="rgb(229,154,25)" rx="2" ry="2" />
+<text  x="38.88" y="271.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="1137.2" y="421" width="0.1" height="15.0" fill="rgb(214,224,48)" rx="2" ry="2" />
+<text  x="1140.16" y="431.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="16.5" y="341" width="0.2" height="15.0" fill="rgb(219,169,13)" rx="2" ry="2" />
+<text  x="19.51" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::render (7 samples, 0.03%)</title><rect x="1014.9" y="325" width="0.3" height="15.0" fill="rgb(213,223,52)" rx="2" ry="2" />
+<text  x="1017.86" y="335.5" ></text>
+</g>
+<g >
+<title>file_exists (15 samples, 0.05%)</title><rect x="15.8" y="373" width="0.7" height="15.0" fill="rgb(227,186,37)" rx="2" ry="2" />
+<text  x="18.82" y="383.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (3 samples, 0.01%)</title><rect x="839.6" y="261" width="0.2" height="15.0" fill="rgb(240,186,29)" rx="2" ry="2" />
+<text  x="842.63" y="271.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:307-321) (5 samples, 0.02%)</title><rect x="21.5" y="341" width="0.2" height="15.0" fill="rgb(209,70,13)" rx="2" ry="2" />
+<text  x="24.47" y="351.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetch (7 samples, 0.03%)</title><rect x="1014.9" y="309" width="0.3" height="15.0" fill="rgb(240,157,8)" rx="2" ry="2" />
+<text  x="1017.86" y="319.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (4 samples, 0.01%)</title><rect x="16.7" y="357" width="0.2" height="15.0" fill="rgb(215,69,37)" rx="2" ry="2" />
+<text  x="19.69" y="367.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (48 samples, 0.18%)</title><rect x="1113.3" y="421" width="2.0" height="15.0" fill="rgb(220,51,36)" rx="2" ry="2" />
+<text  x="1116.26" y="431.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (4 samples, 0.01%)</title><rect x="25.9" y="277" width="0.1" height="15.0" fill="rgb(242,20,39)" rx="2" ry="2" />
+<text  x="28.87" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Factory\ServerRequestFactory::{closure}(/home/isucon/private_isu/webapp/php/vendor/slim/psr7/src/Factory/ServerRequestFactory.php:79-109) (201 samples, 0.73%)</title><rect x="1111.2" y="469" width="8.7" height="15.0" fill="rgb(209,172,25)" rx="2" ry="2" />
+<text  x="1114.23" y="479.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (5 samples, 0.02%)</title><rect x="1134.2" y="437" width="0.2" height="15.0" fill="rgb(218,210,26)" rx="2" ry="2" />
+<text  x="1137.22" y="447.5" ></text>
+</g>
+<g >
+<title>class@anonymous::try_login (2,706 samples, 9.89%)</title><rect x="49.2" y="341" width="116.7" height="15.0" fill="rgb(210,130,52)" rx="2" ry="2" />
+<text  x="52.21" y="351.5" >class@anonymou..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (3 samples, 0.01%)</title><rect x="1136.9" y="389" width="0.1" height="15.0" fill="rgb(221,66,37)" rx="2" ry="2" />
+<text  x="1139.90" y="399.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (311 samples, 1.14%)</title><rect x="35.8" y="325" width="13.4" height="15.0" fill="rgb(226,125,36)" rx="2" ry="2" />
+<text  x="38.75" y="335.5" ></text>
+</g>
+<g >
+<title>file_exists (7 samples, 0.03%)</title><rect x="1132.4" y="405" width="0.3" height="15.0" fill="rgb(221,11,11)" rx="2" ry="2" />
+<text  x="1135.41" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\CallableResolver::bindToContainer (4 samples, 0.01%)</title><rect x="29.0" y="341" width="0.2" height="15.0" fill="rgb(253,144,46)" rx="2" ry="2" />
+<text  x="31.98" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="1121.5" y="357" width="0.2" height="15.0" fill="rgb(212,7,13)" rx="2" ry="2" />
+<text  x="1124.50" y="367.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\Psr17\ServerRequestCreator::createServerRequestFromGlobals (243 samples, 0.89%)</title><rect x="1110.2" y="485" width="10.5" height="15.0" fill="rgb(227,91,2)" rx="2" ry="2" />
+<text  x="1113.24" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (6 samples, 0.02%)</title><rect x="1134.4" y="389" width="0.3" height="15.0" fill="rgb(212,18,49)" rx="2" ry="2" />
+<text  x="1137.44" y="399.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (3 samples, 0.01%)</title><rect x="193.7" y="309" width="0.2" height="15.0" fill="rgb(206,198,8)" rx="2" ry="2" />
+<text  x="196.73" y="319.5" ></text>
+</g>
+<g >
+<title>file_exists (15 samples, 0.05%)</title><rect x="1108.6" y="309" width="0.6" height="15.0" fill="rgb(221,186,53)" rx="2" ry="2" />
+<text  x="1111.56" y="319.5" ></text>
+</g>
+<g >
+<title>shell_exec (18 samples, 0.07%)</title><rect x="1102.7" y="293" width="0.8" height="15.0" fill="rgb(214,169,0)" rx="2" ry="2" />
+<text  x="1105.73" y="303.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (157 samples, 0.57%)</title><rect x="963.3" y="341" width="6.8" height="15.0" fill="rgb(239,200,38)" rx="2" ry="2" />
+<text  x="966.31" y="351.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (33 samples, 0.12%)</title><rect x="164.5" y="309" width="1.4" height="15.0" fill="rgb(246,224,6)" rx="2" ry="2" />
+<text  x="167.48" y="319.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetch (16 samples, 0.06%)</title><rect x="838.0" y="309" width="0.7" height="15.0" fill="rgb(234,109,40)" rx="2" ry="2" />
+<text  x="841.04" y="319.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (39 samples, 0.14%)</title><rect x="970.4" y="181" width="1.7" height="15.0" fill="rgb(234,217,7)" rx="2" ry="2" />
+<text  x="973.43" y="191.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Stream::__construct (8 samples, 0.03%)</title><rect x="1115.5" y="437" width="0.3" height="15.0" fill="rgb(230,70,54)" rx="2" ry="2" />
+<text  x="1118.46" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (11 samples, 0.04%)</title><rect x="1130.2" y="421" width="0.4" height="15.0" fill="rgb(213,45,20)" rx="2" ry="2" />
+<text  x="1133.17" y="431.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="1130.0" y="453" width="0.1" height="15.0" fill="rgb(215,103,30)" rx="2" ry="2" />
+<text  x="1132.95" y="463.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="583.0" y="229" width="0.1" height="15.0" fill="rgb(235,79,27)" rx="2" ry="2" />
+<text  x="585.96" y="239.5" ></text>
+</g>
+<g >
+<title>shell_exec (5 samples, 0.02%)</title><rect x="1090.4" y="309" width="0.2" height="15.0" fill="rgb(242,140,54)" rx="2" ry="2" />
+<text  x="1093.35" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (7 samples, 0.03%)</title><rect x="1133.5" y="357" width="0.3" height="15.0" fill="rgb(249,179,45)" rx="2" ry="2" />
+<text  x="1136.53" y="367.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (34 samples, 0.12%)</title><rect x="232.7" y="309" width="1.4" height="15.0" fill="rgb(238,186,28)" rx="2" ry="2" />
+<text  x="235.68" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (3 samples, 0.01%)</title><rect x="1120.1" y="405" width="0.1" height="15.0" fill="rgb(252,35,53)" rx="2" ry="2" />
+<text  x="1123.12" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Factory\StreamFactory::createStream (4 samples, 0.01%)</title><rect x="1109.7" y="341" width="0.2" height="15.0" fill="rgb(209,15,34)" rx="2" ry="2" />
+<text  x="1112.72" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="17.2" y="469" width="0.2" height="15.0" fill="rgb(208,86,24)" rx="2" ry="2" />
+<text  x="20.25" y="479.5" ></text>
+</g>
+<g >
+<title>Slim\Handlers\Strategies\RequestResponse::__invoke (5 samples, 0.02%)</title><rect x="1128.7" y="389" width="0.2" height="15.0" fill="rgb(222,94,49)" rx="2" ry="2" />
+<text  x="1131.66" y="399.5" ></text>
+</g>
+<g >
+<title>feof (3 samples, 0.01%)</title><rect x="1128.3" y="421" width="0.1" height="15.0" fill="rgb(245,195,46)" rx="2" ry="2" />
+<text  x="1131.27" y="431.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Route::__construct (3 samples, 0.01%)</title><rect x="1138.1" y="437" width="0.1" height="15.0" fill="rgb(254,140,34)" rx="2" ry="2" />
+<text  x="1141.06" y="447.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollector::__construct (27 samples, 0.10%)</title><rect x="1133.0" y="453" width="1.2" height="15.0" fill="rgb(235,169,51)" rx="2" ry="2" />
+<text  x="1136.01" y="463.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="1189.4" y="517" width="0.2" height="15.0" fill="rgb(211,170,5)" rx="2" ry="2" />
+<text  x="1192.44" y="527.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (546 samples, 2.00%)</title><rect x="1065.0" y="325" width="23.5" height="15.0" fill="rgb(213,78,12)" rx="2" ry="2" />
+<text  x="1067.99" y="335.5" >c..</text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollector::createRoute (16 samples, 0.06%)</title><rect x="1137.2" y="453" width="0.6" height="15.0" fill="rgb(241,21,6)" rx="2" ry="2" />
+<text  x="1140.16" y="463.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:55-62) (37 samples, 0.14%)</title><rect x="961.7" y="117" width="1.6" height="15.0" fill="rgb(207,23,42)" rx="2" ry="2" />
+<text  x="964.67" y="127.5" ></text>
+</g>
+<g >
+<title>file_exists (6 samples, 0.02%)</title><rect x="1133.6" y="341" width="0.2" height="15.0" fill="rgb(224,197,22)" rx="2" ry="2" />
+<text  x="1136.58" y="351.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (16 samples, 0.06%)</title><rect x="959.0" y="261" width="0.6" height="15.0" fill="rgb(246,219,12)" rx="2" ry="2" />
+<text  x="961.95" y="271.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (13 samples, 0.05%)</title><rect x="13.0" y="485" width="0.5" height="15.0" fill="rgb(232,104,25)" rx="2" ry="2" />
+<text  x="15.98" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="1109.3" y="277" width="0.2" height="15.0" fill="rgb(240,186,51)" rx="2" ry="2" />
+<text  x="1112.33" y="287.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (659 samples, 2.41%)</title><rect x="194.5" y="293" width="28.4" height="15.0" fill="rgb(224,203,41)" rx="2" ry="2" />
+<text  x="197.46" y="303.5" >DI..</text>
+</g>
+<g >
+<title>digest (1,257 samples, 4.60%)</title><rect x="110.2" y="309" width="54.2" height="15.0" fill="rgb(218,83,9)" rx="2" ry="2" />
+<text  x="113.17" y="319.5" >digest</text>
+</g>
+<g >
+<title>DI\Container::get (16 samples, 0.06%)</title><rect x="959.0" y="213" width="0.6" height="15.0" fill="rgb(213,32,46)" rx="2" ry="2" />
+<text  x="961.95" y="223.5" ></text>
+</g>
+<g >
+<title>calculate_passhash (445 samples, 1.63%)</title><rect x="174.4" y="341" width="19.2" height="15.0" fill="rgb(221,225,9)" rx="2" ry="2" />
+<text  x="177.36" y="351.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (16 samples, 0.06%)</title><rect x="1131.6" y="453" width="0.7" height="15.0" fill="rgb(219,205,7)" rx="2" ry="2" />
+<text  x="1134.59" y="463.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (38 samples, 0.14%)</title><rect x="166.1" y="277" width="1.7" height="15.0" fill="rgb(235,162,33)" rx="2" ry="2" />
+<text  x="169.12" y="287.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:323-333) (4 samples, 0.01%)</title><rect x="21.7" y="341" width="0.2" height="15.0" fill="rgb(239,151,14)" rx="2" ry="2" />
+<text  x="24.69" y="351.5" ></text>
+</g>
+<g >
+<title>PDOStatement::fetchAll (12 samples, 0.04%)</title><rect x="353.4" y="325" width="0.5" height="15.0" fill="rgb(222,159,17)" rx="2" ry="2" />
+<text  x="356.42" y="335.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (27 samples, 0.10%)</title><rect x="230.3" y="101" width="1.2" height="15.0" fill="rgb(219,104,14)" rx="2" ry="2" />
+<text  x="233.35" y="111.5" ></text>
+</g>
+<g >
+<title>DI\Container::getDefinition (3 samples, 0.01%)</title><rect x="194.3" y="325" width="0.2" height="15.0" fill="rgb(239,32,8)" rx="2" ry="2" />
+<text  x="197.33" y="335.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (290 samples, 1.06%)</title><rect x="36.5" y="245" width="12.5" height="15.0" fill="rgb(231,31,28)" rx="2" ry="2" />
+<text  x="39.53" y="255.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="1122.0" y="389" width="0.1" height="15.0" fill="rgb(229,32,23)" rx="2" ry="2" />
+<text  x="1124.97" y="399.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (5 samples, 0.02%)</title><rect x="1136.0" y="405" width="0.2" height="15.0" fill="rgb(239,221,52)" rx="2" ry="2" />
+<text  x="1138.99" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\Psr17\SlimHttpServerRequestCreator::isServerRequestDecoratorAvailable (7 samples, 0.03%)</title><rect x="1121.8" y="437" width="0.3" height="15.0" fill="rgb(218,106,13)" rx="2" ry="2" />
+<text  x="1124.84" y="447.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (14 samples, 0.05%)</title><rect x="863.7" y="229" width="0.6" height="15.0" fill="rgb(252,207,3)" rx="2" ry="2" />
+<text  x="866.70" y="239.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:269-300) (643 samples, 2.35%)</title><rect x="166.1" y="357" width="27.8" height="15.0" fill="rgb(231,110,13)" rx="2" ry="2" />
+<text  x="169.12" y="367.5" >C..</text>
+</g>
+<g >
+<title>Invoker\Invoker::call (28 samples, 0.10%)</title><rect x="230.3" y="277" width="1.2" height="15.0" fill="rgb(252,25,3)" rx="2" ry="2" />
+<text  x="233.31" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::render (15 samples, 0.05%)</title><rect x="597.6" y="325" width="0.7" height="15.0" fill="rgb(209,168,32)" rx="2" ry="2" />
+<text  x="600.63" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (7 samples, 0.03%)</title><rect x="1133.5" y="373" width="0.3" height="15.0" fill="rgb(229,182,10)" rx="2" ry="2" />
+<text  x="1136.53" y="383.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (4 samples, 0.01%)</title><rect x="196.9" y="37" width="0.2" height="15.0" fill="rgb(229,95,17)" rx="2" ry="2" />
+<text  x="199.92" y="47.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (265 samples, 0.97%)</title><rect x="583.2" y="277" width="11.4" height="15.0" fill="rgb(205,162,14)" rx="2" ry="2" />
+<text  x="586.18" y="287.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::&lt;main&gt; (10 samples, 0.04%)</title><rect x="597.8" y="229" width="0.4" height="15.0" fill="rgb(249,93,6)" rx="2" ry="2" />
+<text  x="600.76" y="239.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="16.5" y="357" width="0.2" height="15.0" fill="rgb(208,38,51)" rx="2" ry="2" />
+<text  x="19.51" y="367.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (288 samples, 1.05%)</title><rect x="36.6" y="149" width="12.4" height="15.0" fill="rgb(253,82,37)" rx="2" ry="2" />
+<text  x="39.62" y="159.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (41 samples, 0.15%)</title><rect x="970.3" y="309" width="1.8" height="15.0" fill="rgb(211,126,28)" rx="2" ry="2" />
+<text  x="973.34" y="319.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (771 samples, 2.82%)</title><rect x="905.6" y="341" width="33.3" height="15.0" fill="rgb(254,200,5)" rx="2" ry="2" />
+<text  x="908.63" y="351.5" >PD..</text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (791 samples, 2.89%)</title><rect x="869.6" y="325" width="34.1" height="15.0" fill="rgb(252,153,37)" rx="2" ry="2" />
+<text  x="872.57" y="335.5" >cl..</text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (4 samples, 0.01%)</title><rect x="1014.7" y="325" width="0.2" height="15.0" fill="rgb(235,99,48)" rx="2" ry="2" />
+<text  x="1017.69" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (5 samples, 0.02%)</title><rect x="1135.6" y="357" width="0.2" height="15.0" fill="rgb(205,91,6)" rx="2" ry="2" />
+<text  x="1138.60" y="367.5" ></text>
+</g>
+<g >
+<title>file_exists (6 samples, 0.02%)</title><rect x="18.2" y="437" width="0.3" height="15.0" fill="rgb(222,94,16)" rx="2" ry="2" />
+<text  x="21.24" y="447.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (7 samples, 0.03%)</title><rect x="19.2" y="421" width="0.3" height="15.0" fill="rgb(235,97,39)" rx="2" ry="2" />
+<text  x="22.19" y="431.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (14 samples, 0.05%)</title><rect x="863.7" y="309" width="0.6" height="15.0" fill="rgb(238,25,37)" rx="2" ry="2" />
+<text  x="866.70" y="319.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (93 samples, 0.34%)</title><rect x="865.6" y="325" width="4.0" height="15.0" fill="rgb(239,1,47)" rx="2" ry="2" />
+<text  x="868.56" y="335.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (257 samples, 0.94%)</title><rect x="583.5" y="229" width="11.1" height="15.0" fill="rgb(228,56,12)" rx="2" ry="2" />
+<text  x="586.48" y="239.5" ></text>
+</g>
+<g >
+<title>Slim\Handlers\Strategies\RequestResponse::__invoke (5 samples, 0.02%)</title><rect x="1189.1" y="485" width="0.2" height="15.0" fill="rgb(235,148,23)" rx="2" ry="2" />
+<text  x="1192.09" y="495.5" ></text>
+</g>
+<g >
+<title>Slim\MiddlewareDispatcher::handle (25,073 samples, 91.66%)</title><rect x="28.5" y="405" width="1081.6" height="15.0" fill="rgb(206,14,31)" rx="2" ry="2" />
+<text  x="31.46" y="415.5" >Slim\MiddlewareDispatcher::handle</text>
+</g>
+<g >
+<title>PDOStatement::execute (7 samples, 0.03%)</title><rect x="193.6" y="325" width="0.3" height="15.0" fill="rgb(240,98,17)" rx="2" ry="2" />
+<text  x="196.55" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (28 samples, 0.10%)</title><rect x="230.3" y="197" width="1.2" height="15.0" fill="rgb(224,173,32)" rx="2" ry="2" />
+<text  x="233.31" y="207.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (4 samples, 0.01%)</title><rect x="1122.0" y="373" width="0.1" height="15.0" fill="rgb(254,114,47)" rx="2" ry="2" />
+<text  x="1124.97" y="383.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::addHeader (3 samples, 0.01%)</title><rect x="1120.4" y="405" width="0.1" height="15.0" fill="rgb(243,146,48)" rx="2" ry="2" />
+<text  x="1123.42" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (12 samples, 0.04%)</title><rect x="14.7" y="485" width="0.5" height="15.0" fill="rgb(212,78,8)" rx="2" ry="2" />
+<text  x="17.70" y="495.5" ></text>
+</g>
+<g >
+<title>class_exists (8 samples, 0.03%)</title><rect x="1136.3" y="453" width="0.4" height="15.0" fill="rgb(250,63,13)" rx="2" ry="2" />
+<text  x="1139.34" y="463.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetch (13 samples, 0.05%)</title><rect x="597.7" y="309" width="0.6" height="15.0" fill="rgb(205,47,26)" rx="2" ry="2" />
+<text  x="600.71" y="319.5" ></text>
+</g>
+<g >
+<title>class_exists (8 samples, 0.03%)</title><rect x="1136.7" y="453" width="0.3" height="15.0" fill="rgb(223,56,51)" rx="2" ry="2" />
+<text  x="1139.68" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (7 samples, 0.03%)</title><rect x="1132.4" y="421" width="0.3" height="15.0" fill="rgb(210,58,12)" rx="2" ry="2" />
+<text  x="1135.41" y="431.5" ></text>
+</g>
+<g >
+<title>file_exists (7 samples, 0.03%)</title><rect x="14.7" y="437" width="0.3" height="15.0" fill="rgb(229,203,6)" rx="2" ry="2" />
+<text  x="17.75" y="447.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollectorProxy::map (7 samples, 0.03%)</title><rect x="1137.9" y="485" width="0.3" height="15.0" fill="rgb(216,166,46)" rx="2" ry="2" />
+<text  x="1140.89" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (9 samples, 0.03%)</title><rect x="15.3" y="453" width="0.4" height="15.0" fill="rgb(215,180,41)" rx="2" ry="2" />
+<text  x="18.26" y="463.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (4 samples, 0.01%)</title><rect x="1130.6" y="421" width="0.2" height="15.0" fill="rgb(219,222,31)" rx="2" ry="2" />
+<text  x="1133.64" y="431.5" ></text>
+</g>
+<g >
+<title>Slim\CallableResolver::resolveRoute (6 samples, 0.02%)</title><rect x="28.9" y="373" width="0.3" height="15.0" fill="rgb(245,62,28)" rx="2" ry="2" />
+<text  x="31.89" y="383.5" ></text>
+</g>
+<g >
+<title>PDOStatement::closeCursor (3 samples, 0.01%)</title><rect x="1093.6" y="309" width="0.1" height="15.0" fill="rgb(228,74,28)" rx="2" ry="2" />
+<text  x="1096.59" y="319.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (604 samples, 2.21%)</title><rect x="196.8" y="133" width="26.0" height="15.0" fill="rgb(228,102,51)" rx="2" ry="2" />
+<text  x="199.79" y="143.5" >c..</text>
+</g>
+<g >
+<title>call_user_func_array (77 samples, 0.28%)</title><rect x="32.0" y="133" width="3.4" height="15.0" fill="rgb(240,119,48)" rx="2" ry="2" />
+<text  x="35.04" y="143.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (8 samples, 0.03%)</title><rect x="1119.9" y="453" width="0.3" height="15.0" fill="rgb(241,8,8)" rx="2" ry="2" />
+<text  x="1122.90" y="463.5" ></text>
+</g>
+<g >
+<title>digest (4 samples, 0.01%)</title><rect x="1107.2" y="293" width="0.2" height="15.0" fill="rgb(254,77,47)" rx="2" ry="2" />
+<text  x="1110.22" y="303.5" ></text>
+</g>
+<g >
+<title>Slim\ResponseEmitter::emitStatusLine (8 samples, 0.03%)</title><rect x="1128.9" y="469" width="0.4" height="15.0" fill="rgb(221,60,4)" rx="2" ry="2" />
+<text  x="1131.92" y="479.5" ></text>
+</g>
+<g >
+<title>file_get_contents (4 samples, 0.01%)</title><rect x="939.0" y="341" width="0.2" height="15.0" fill="rgb(251,46,10)" rx="2" ry="2" />
+<text  x="941.98" y="351.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (27 samples, 0.10%)</title><rect x="230.3" y="133" width="1.2" height="15.0" fill="rgb(231,14,48)" rx="2" ry="2" />
+<text  x="233.35" y="143.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (77 samples, 0.28%)</title><rect x="32.0" y="245" width="3.4" height="15.0" fill="rgb(249,130,22)" rx="2" ry="2" />
+<text  x="35.04" y="255.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="939.3" y="245" width="0.1" height="15.0" fill="rgb(252,174,32)" rx="2" ry="2" />
+<text  x="942.28" y="255.5" ></text>
+</g>
+<g >
+<title>shell_exec (238 samples, 0.87%)</title><rect x="174.4" y="293" width="10.2" height="15.0" fill="rgb(233,214,50)" rx="2" ry="2" />
+<text  x="177.36" y="303.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="223.0" y="245" width="0.2" height="15.0" fill="rgb(251,178,2)" rx="2" ry="2" />
+<text  x="225.97" y="255.5" ></text>
+</g>
+<g >
+<title>calculate_salt (4 samples, 0.01%)</title><rect x="1107.2" y="309" width="0.2" height="15.0" fill="rgb(228,187,52)" rx="2" ry="2" />
+<text  x="1110.22" y="319.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (38 samples, 0.14%)</title><rect x="15.3" y="469" width="1.6" height="15.0" fill="rgb(233,209,17)" rx="2" ry="2" />
+<text  x="18.26" y="479.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (37 samples, 0.14%)</title><rect x="961.7" y="133" width="1.6" height="15.0" fill="rgb(235,35,3)" rx="2" ry="2" />
+<text  x="964.67" y="143.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (632 samples, 2.31%)</title><rect x="195.6" y="277" width="27.3" height="15.0" fill="rgb(237,211,1)" rx="2" ry="2" />
+<text  x="198.62" y="287.5" >I..</text>
+</g>
+<g >
+<title>Invoker\Invoker::call (193 samples, 0.71%)</title><rect x="939.6" y="277" width="8.3" height="15.0" fill="rgb(254,220,34)" rx="2" ry="2" />
+<text  x="942.58" y="287.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (7 samples, 0.03%)</title><rect x="1135.2" y="405" width="0.3" height="15.0" fill="rgb(229,37,13)" rx="2" ry="2" />
+<text  x="1138.21" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (4 samples, 0.01%)</title><rect x="1121.5" y="373" width="0.2" height="15.0" fill="rgb(234,174,43)" rx="2" ry="2" />
+<text  x="1124.50" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (14 samples, 0.05%)</title><rect x="863.7" y="325" width="0.6" height="15.0" fill="rgb(245,167,16)" rx="2" ry="2" />
+<text  x="866.70" y="335.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteRunner::handle (25,304 samples, 92.51%)</title><rect x="18.7" y="453" width="1091.5" height="15.0" fill="rgb(225,87,12)" rx="2" ry="2" />
+<text  x="21.67" y="463.5" >Slim\Routing\RouteRunner::handle</text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (189 samples, 0.69%)</title><rect x="1093.8" y="325" width="8.1" height="15.0" fill="rgb(213,16,12)" rx="2" ry="2" />
+<text  x="1096.76" y="335.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (3 samples, 0.01%)</title><rect x="193.7" y="213" width="0.2" height="15.0" fill="rgb(250,159,39)" rx="2" ry="2" />
+<text  x="196.73" y="223.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (3 samples, 0.01%)</title><rect x="193.7" y="261" width="0.2" height="15.0" fill="rgb(205,116,9)" rx="2" ry="2" />
+<text  x="196.73" y="271.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (5 samples, 0.02%)</title><rect x="1133.8" y="389" width="0.2" height="15.0" fill="rgb(219,81,40)" rx="2" ry="2" />
+<text  x="1136.83" y="399.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (1,006 samples, 3.68%)</title><rect x="1015.2" y="325" width="43.4" height="15.0" fill="rgb(210,63,7)" rx="2" ry="2" />
+<text  x="1018.16" y="335.5" >PDOS..</text>
+</g>
+<g >
+<title>FastRoute\RouteParser\Std::parse (18 samples, 0.07%)</title><rect x="26.5" y="309" width="0.8" height="15.0" fill="rgb(215,123,47)" rx="2" ry="2" />
+<text  x="29.52" y="319.5" ></text>
+</g>
+<g >
+<title>class@anonymous::make_posts (248 samples, 0.91%)</title><rect x="1091.2" y="341" width="10.7" height="15.0" fill="rgb(247,212,7)" rx="2" ry="2" />
+<text  x="1094.21" y="351.5" ></text>
+</g>
+<g >
+<title>PDO::prepare (13 samples, 0.05%)</title><rect x="361.0" y="309" width="0.6" height="15.0" fill="rgb(250,105,5)" rx="2" ry="2" />
+<text  x="364.01" y="319.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::addVariableRoute (3 samples, 0.01%)</title><rect x="21.6" y="293" width="0.1" height="15.0" fill="rgb(224,141,34)" rx="2" ry="2" />
+<text  x="24.56" y="303.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (39 samples, 0.14%)</title><rect x="903.9" y="213" width="1.7" height="15.0" fill="rgb(245,61,22)" rx="2" ry="2" />
+<text  x="906.91" y="223.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (64 samples, 0.23%)</title><rect x="972.5" y="229" width="2.7" height="15.0" fill="rgb(236,0,8)" rx="2" ry="2" />
+<text  x="975.45" y="239.5" ></text>
+</g>
+<g >
+<title>digest (238 samples, 0.87%)</title><rect x="174.4" y="309" width="10.2" height="15.0" fill="rgb(216,84,11)" rx="2" ry="2" />
+<text  x="177.36" y="319.5" ></text>
+</g>
+<g >
+<title>file_exists (5 samples, 0.02%)</title><rect x="1133.8" y="373" width="0.2" height="15.0" fill="rgb(238,176,31)" rx="2" ry="2" />
+<text  x="1136.83" y="383.5" ></text>
+</g>
+<g >
+<title>class@anonymous::__construct (3 samples, 0.01%)</title><rect x="193.7" y="229" width="0.2" height="15.0" fill="rgb(216,206,22)" rx="2" ry="2" />
+<text  x="196.73" y="239.5" ></text>
+</g>
+<g >
+<title>class@anonymous::fetch_first (5 samples, 0.02%)</title><rect x="864.8" y="325" width="0.2" height="15.0" fill="rgb(214,220,53)" rx="2" ry="2" />
+<text  x="867.82" y="335.5" ></text>
+</g>
+<g >
+<title>Invoker\Invoker::call (27 samples, 0.10%)</title><rect x="230.3" y="149" width="1.2" height="15.0" fill="rgb(236,83,40)" rx="2" ry="2" />
+<text  x="233.35" y="159.5" ></text>
+</g>
+<g >
+<title>Slim\Views\PhpRenderer::fetchTemplate (17 samples, 0.06%)</title><rect x="231.8" y="293" width="0.7" height="15.0" fill="rgb(213,173,33)" rx="2" ry="2" />
+<text  x="234.82" y="303.5" ></text>
+</g>
+<g >
+<title>class_exists (12 samples, 0.04%)</title><rect x="1121.2" y="437" width="0.5" height="15.0" fill="rgb(244,207,19)" rx="2" ry="2" />
+<text  x="1124.15" y="447.5" ></text>
+</g>
+<g >
+<title>FastRoute\DataGenerator\RegexBasedAbstract::computeChunkSize (3 samples, 0.01%)</title><rect x="24.9" y="293" width="0.1" height="15.0" fill="rgb(228,66,6)" rx="2" ry="2" />
+<text  x="27.88" y="303.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="15.1" y="405" width="0.1" height="15.0" fill="rgb(251,157,18)" rx="2" ry="2" />
+<text  x="18.09" y="415.5" ></text>
+</g>
+<g >
+<title>file_exists (7 samples, 0.03%)</title><rect x="13.2" y="405" width="0.3" height="15.0" fill="rgb(233,115,10)" rx="2" ry="2" />
+<text  x="16.19" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (8 samples, 0.03%)</title><rect x="1116.3" y="389" width="0.4" height="15.0" fill="rgb(222,3,35)" rx="2" ry="2" />
+<text  x="1119.32" y="399.5" ></text>
+</g>
+<g >
+<title>connection_status (7 samples, 0.03%)</title><rect x="1128.6" y="453" width="0.3" height="15.0" fill="rgb(252,211,17)" rx="2" ry="2" />
+<text  x="1131.57" y="463.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:238-256) (3,029 samples, 11.07%)</title><rect x="35.5" y="357" width="130.6" height="15.0" fill="rgb(230,92,37)" rx="2" ry="2" />
+<text  x="38.45" y="367.5" >Closure::{closur..</text>
+</g>
+<g >
+<title>Slim\Routing\RouteResolver::computeRoutingResults (165 samples, 0.60%)</title><rect x="20.3" y="405" width="7.1" height="15.0" fill="rgb(205,191,41)" rx="2" ry="2" />
+<text  x="23.27" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (38 samples, 0.14%)</title><rect x="166.1" y="213" width="1.7" height="15.0" fill="rgb(248,179,45)" rx="2" ry="2" />
+<text  x="169.12" y="223.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="16.5" y="325" width="0.1" height="15.0" fill="rgb(237,206,50)" rx="2" ry="2" />
+<text  x="19.51" y="335.5" ></text>
+</g>
+<g >
+<title>PDOStatement::execute (5 samples, 0.02%)</title><rect x="864.8" y="309" width="0.2" height="15.0" fill="rgb(250,60,0)" rx="2" ry="2" />
+<text  x="867.82" y="319.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Route::prepare (3 samples, 0.01%)</title><rect x="27.7" y="421" width="0.2" height="15.0" fill="rgb(233,116,44)" rx="2" ry="2" />
+<text  x="30.73" y="431.5" ></text>
+</g>
+<g >
+<title>FastRoute\RouteCollector::addRoute (4 samples, 0.01%)</title><rect x="21.7" y="325" width="0.2" height="15.0" fill="rgb(216,97,20)" rx="2" ry="2" />
+<text  x="24.69" y="335.5" ></text>
+</g>
+<g >
+<title>session_start (1,149 samples, 4.20%)</title><rect x="1138.3" y="501" width="49.5" height="15.0" fill="rgb(240,166,1)" rx="2" ry="2" />
+<text  x="1141.28" y="511.5" >sessi..</text>
+</g>
+<g >
+<title>&lt;main&gt; (9 samples, 0.03%)</title><rect x="1116.3" y="405" width="0.4" height="15.0" fill="rgb(233,156,47)" rx="2" ry="2" />
+<text  x="1119.28" y="415.5" ></text>
+</g>
+<g >
+<title>Slim\Psr7\Headers::normalizeHeaderName (7 samples, 0.03%)</title><rect x="1128.0" y="421" width="0.3" height="15.0" fill="rgb(217,4,42)" rx="2" ry="2" />
+<text  x="1130.97" y="431.5" ></text>
+</g>
+<g >
+<title>calculate_salt (238 samples, 0.87%)</title><rect x="174.4" y="325" width="10.2" height="15.0" fill="rgb(239,59,17)" rx="2" ry="2" />
+<text  x="177.36" y="335.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (192 samples, 0.70%)</title><rect x="939.6" y="245" width="8.3" height="15.0" fill="rgb(237,27,54)" rx="2" ry="2" />
+<text  x="942.63" y="255.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (6 samples, 0.02%)</title><rect x="1135.6" y="389" width="0.2" height="15.0" fill="rgb(208,7,30)" rx="2" ry="2" />
+<text  x="1138.56" y="399.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (45 samples, 0.16%)</title><rect x="1113.4" y="405" width="1.9" height="15.0" fill="rgb(222,4,26)" rx="2" ry="2" />
+<text  x="1116.39" y="415.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (191 samples, 0.70%)</title><rect x="939.7" y="213" width="8.2" height="15.0" fill="rgb(207,127,29)" rx="2" ry="2" />
+<text  x="942.67" y="223.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (5 samples, 0.02%)</title><rect x="17.2" y="485" width="0.3" height="15.0" fill="rgb(225,173,28)" rx="2" ry="2" />
+<text  x="20.25" y="495.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (16 samples, 0.06%)</title><rect x="1130.9" y="453" width="0.7" height="15.0" fill="rgb(216,34,26)" rx="2" ry="2" />
+<text  x="1133.90" y="463.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/vendor/composer/ClassLoader.php:575-577) (4 samples, 0.01%)</title><rect x="939.4" y="261" width="0.2" height="15.0" fill="rgb(237,18,27)" rx="2" ry="2" />
+<text  x="942.41" y="271.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (288 samples, 1.05%)</title><rect x="36.6" y="181" width="12.4" height="15.0" fill="rgb(224,91,15)" rx="2" ry="2" />
+<text  x="39.62" y="191.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="1120.1" y="357" width="0.1" height="15.0" fill="rgb(235,22,48)" rx="2" ry="2" />
+<text  x="1123.12" y="367.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (6 samples, 0.02%)</title><rect x="1120.9" y="405" width="0.3" height="15.0" fill="rgb(226,7,38)" rx="2" ry="2" />
+<text  x="1123.89" y="415.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="1132.8" y="389" width="0.2" height="15.0" fill="rgb(210,1,46)" rx="2" ry="2" />
+<text  x="1135.80" y="399.5" ></text>
+</g>
+<g >
+<title>file_exists (4 samples, 0.01%)</title><rect x="1132.0" y="373" width="0.2" height="15.0" fill="rgb(243,110,4)" rx="2" ry="2" />
+<text  x="1134.98" y="383.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (24 samples, 0.09%)</title><rect x="22.3" y="325" width="1.0" height="15.0" fill="rgb(242,23,4)" rx="2" ry="2" />
+<text  x="25.25" y="335.5" ></text>
+</g>
+<g >
+<title>PDO::__construct (286 samples, 1.05%)</title><rect x="36.7" y="101" width="12.3" height="15.0" fill="rgb(234,199,46)" rx="2" ry="2" />
+<text  x="39.70" y="111.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (28 samples, 0.10%)</title><rect x="230.3" y="213" width="1.2" height="15.0" fill="rgb(250,75,52)" rx="2" ry="2" />
+<text  x="233.31" y="223.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (27,304 samples, 99.82%)</title><rect x="10.0" y="517" width="1177.8" height="15.0" fill="rgb(220,33,47)" rx="2" ry="2" />
+<text  x="13.00" y="527.5" >&lt;main&gt;</text>
+</g>
+<g >
+<title>digest (1,412 samples, 5.16%)</title><rect x="49.3" y="293" width="60.9" height="15.0" fill="rgb(233,221,44)" rx="2" ry="2" />
+<text  x="52.26" y="303.5" >digest</text>
+</g>
+<g >
+<title>call_user_func_array (39 samples, 0.14%)</title><rect x="903.9" y="261" width="1.7" height="15.0" fill="rgb(215,77,23)" rx="2" ry="2" />
+<text  x="906.91" y="271.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:501-531) (2,696 samples, 9.86%)</title><rect x="972.2" y="357" width="116.3" height="15.0" fill="rgb(251,0,17)" rx="2" ry="2" />
+<text  x="975.24" y="367.5" >Closure::{clos..</text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (11 samples, 0.04%)</title><rect x="20.5" y="341" width="0.5" height="15.0" fill="rgb(208,202,3)" rx="2" ry="2" />
+<text  x="23.48" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (29 samples, 0.11%)</title><rect x="1108.3" y="357" width="1.2" height="15.0" fill="rgb(220,169,51)" rx="2" ry="2" />
+<text  x="1111.30" y="367.5" ></text>
+</g>
+<g >
+<title>class@anonymous::get_session_user (5 samples, 0.02%)</title><rect x="864.8" y="341" width="0.2" height="15.0" fill="rgb(211,80,3)" rx="2" ry="2" />
+<text  x="867.82" y="351.5" ></text>
+</g>
+<g >
+<title>strpos (5 samples, 0.02%)</title><rect x="1128.7" y="405" width="0.2" height="15.0" fill="rgb(244,59,17)" rx="2" ry="2" />
+<text  x="1131.66" y="415.5" ></text>
+</g>
+<g >
+<title>FastRoute\simpleDispatcher (143 samples, 0.52%)</title><rect x="21.1" y="357" width="6.2" height="15.0" fill="rgb(226,176,51)" rx="2" ry="2" />
+<text  x="24.13" y="367.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (3 samples, 0.01%)</title><rect x="1136.9" y="357" width="0.1" height="15.0" fill="rgb(220,97,41)" rx="2" ry="2" />
+<text  x="1139.90" y="367.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\Psr17\Psr17Factory::getServerRequestCreator (8 samples, 0.03%)</title><rect x="1120.8" y="453" width="0.4" height="15.0" fill="rgb(245,194,28)" rx="2" ry="2" />
+<text  x="1123.81" y="463.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFile (4 samples, 0.01%)</title><rect x="939.2" y="261" width="0.2" height="15.0" fill="rgb(244,53,10)" rx="2" ry="2" />
+<text  x="942.24" y="271.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (273 samples, 1.00%)</title><rect x="582.8" y="309" width="11.8" height="15.0" fill="rgb(207,74,35)" rx="2" ry="2" />
+<text  x="585.83" y="319.5" ></text>
+</g>
+<g >
+<title>file_exists (8 samples, 0.03%)</title><rect x="1130.3" y="389" width="0.3" height="15.0" fill="rgb(248,222,3)" rx="2" ry="2" />
+<text  x="1133.30" y="399.5" ></text>
+</g>
+<g >
+<title>class@anonymous::make_posts (896 samples, 3.28%)</title><rect x="865.0" y="341" width="38.7" height="15.0" fill="rgb(222,141,54)" rx="2" ry="2" />
+<text  x="868.04" y="351.5" >cla..</text>
+</g>
+<g >
+<title>Invoker\Invoker::call (40 samples, 0.15%)</title><rect x="903.9" y="277" width="1.7" height="15.0" fill="rgb(228,140,39)" rx="2" ry="2" />
+<text  x="906.86" y="287.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (17 samples, 0.06%)</title><rect x="1133.1" y="437" width="0.7" height="15.0" fill="rgb(231,1,24)" rx="2" ry="2" />
+<text  x="1136.10" y="447.5" ></text>
+</g>
+<g >
+<title>calculate_passhash (2,669 samples, 9.76%)</title><rect x="49.3" y="325" width="115.1" height="15.0" fill="rgb(226,221,38)" rx="2" ry="2" />
+<text  x="52.26" y="335.5" >calculate_pass..</text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (3 samples, 0.01%)</title><rect x="222.7" y="69" width="0.1" height="15.0" fill="rgb(249,217,28)" rx="2" ry="2" />
+<text  x="225.71" y="79.5" ></text>
+</g>
+<g >
+<title>Closure::{closure}(/home/isucon/private_isu/webapp/php/index.php:335-352) (5 samples, 0.02%)</title><rect x="1128.7" y="373" width="0.2" height="15.0" fill="rgb(210,198,31)" rx="2" ry="2" />
+<text  x="1131.66" y="383.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (43 samples, 0.16%)</title><rect x="961.5" y="341" width="1.8" height="15.0" fill="rgb(209,112,32)" rx="2" ry="2" />
+<text  x="964.45" y="351.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (18 samples, 0.07%)</title><rect x="19.1" y="437" width="0.8" height="15.0" fill="rgb(212,53,46)" rx="2" ry="2" />
+<text  x="22.15" y="447.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="1116.1" y="389" width="0.1" height="15.0" fill="rgb(225,206,37)" rx="2" ry="2" />
+<text  x="1119.10" y="399.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\RouteCollectorProxy::__construct (44 samples, 0.16%)</title><rect x="1132.3" y="469" width="1.9" height="15.0" fill="rgb(247,224,43)" rx="2" ry="2" />
+<text  x="1135.28" y="479.5" ></text>
+</g>
+<g >
+<title>DI\Container::resolveDefinition (365 samples, 1.33%)</title><rect x="839.0" y="325" width="15.7" height="15.0" fill="rgb(234,164,28)" rx="2" ry="2" />
+<text  x="841.99" y="335.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::findFileWithExtension (7 samples, 0.03%)</title><rect x="1131.9" y="389" width="0.3" height="15.0" fill="rgb(236,221,23)" rx="2" ry="2" />
+<text  x="1134.89" y="399.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (4 samples, 0.01%)</title><rect x="16.7" y="341" width="0.2" height="15.0" fill="rgb(224,58,1)" rx="2" ry="2" />
+<text  x="19.69" y="351.5" ></text>
+</g>
+<g >
+<title>class@anonymous::make_posts (82 samples, 0.30%)</title><rect x="1103.7" y="341" width="3.5" height="15.0" fill="rgb(221,91,49)" rx="2" ry="2" />
+<text  x="1106.68" y="351.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (39 samples, 0.14%)</title><rect x="970.4" y="245" width="1.7" height="15.0" fill="rgb(250,197,49)" rx="2" ry="2" />
+<text  x="973.43" y="255.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\FactoryResolver::resolve (201 samples, 0.73%)</title><rect x="939.2" y="293" width="8.7" height="15.0" fill="rgb(250,7,52)" rx="2" ry="2" />
+<text  x="942.24" y="303.5" ></text>
+</g>
+<g >
+<title>&lt;main&gt; (5 samples, 0.02%)</title><rect x="1109.3" y="325" width="0.2" height="15.0" fill="rgb(227,37,32)" rx="2" ry="2" />
+<text  x="1112.33" y="335.5" ></text>
+</g>
+<g >
+<title>file_exists (18 samples, 0.07%)</title><rect x="1113.7" y="357" width="0.8" height="15.0" fill="rgb(217,156,28)" rx="2" ry="2" />
+<text  x="1116.73" y="367.5" ></text>
+</g>
+<g >
+<title>class_exists (7 samples, 0.03%)</title><rect x="1121.8" y="421" width="0.3" height="15.0" fill="rgb(214,193,40)" rx="2" ry="2" />
+<text  x="1124.84" y="431.5" ></text>
+</g>
+<g >
+<title>file_exists (7 samples, 0.03%)</title><rect x="23.6" y="245" width="0.3" height="15.0" fill="rgb(206,81,0)" rx="2" ry="2" />
+<text  x="26.63" y="255.5" ></text>
+</g>
+<g >
+<title>Slim\Factory\AppFactory::create (174 samples, 0.64%)</title><rect x="1129.5" y="501" width="7.5" height="15.0" fill="rgb(247,206,30)" rx="2" ry="2" />
+<text  x="1132.52" y="511.5" ></text>
+</g>
+<g >
+<title>DI\Container::get (42 samples, 0.15%)</title><rect x="970.3" y="341" width="1.8" height="15.0" fill="rgb(249,80,10)" rx="2" ry="2" />
+<text  x="973.30" y="351.5" ></text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (38 samples, 0.14%)</title><rect x="166.1" y="181" width="1.7" height="15.0" fill="rgb(231,223,10)" rx="2" ry="2" />
+<text  x="169.12" y="191.5" ></text>
+</g>
+<g >
+<title>Composer\Autoload\ClassLoader::loadClass (4 samples, 0.01%)</title><rect x="1110.7" y="453" width="0.2" height="15.0" fill="rgb(230,47,33)" rx="2" ry="2" />
+<text  x="1113.71" y="463.5" ></text>
+</g>
+<g >
+<title>call_user_func_array (28 samples, 0.10%)</title><rect x="230.3" y="261" width="1.2" height="15.0" fill="rgb(217,91,30)" rx="2" ry="2" />
+<text  x="233.31" y="271.5" ></text>
+</g>
+<g >
+<title>Slim\Routing\Route::handle (25,067 samples, 91.64%)</title><rect x="28.7" y="389" width="1081.4" height="15.0" fill="rgb(223,48,43)" rx="2" ry="2" />
+<text  x="31.72" y="399.5" >Slim\Routing\Route::handle</text>
+</g>
+<g >
+<title>DI\Definition\Resolver\ResolverDispatcher::resolve (311 samples, 1.14%)</title><rect x="35.8" y="309" width="13.4" height="15.0" fill="rgb(233,118,9)" rx="2" ry="2" />
+<text  x="38.75" y="319.5" ></text>
+</g>
+<g >
+<title>{closure}(/home/isucon/private_isu/webapp/php/index.php:78-165) (37 samples, 0.14%)</title><rect x="961.7" y="245" width="1.6" height="15.0" fill="rgb(215,86,16)" rx="2" ry="2" />
+<text  x="964.67" y="255.5" ></text>
+</g>
+<g >
+<title>file_exists (3 samples, 0.01%)</title><rect x="1135.7" y="325" width="0.1" height="15.0" fill="rgb(236,111,44)" rx="2" ry="2" />
+<text  x="1138.69" y="335.5" ></text>
+</g>
+</g>
+</svg>
