@@ -417,6 +417,7 @@ $app->get('/image/{id}.{ext}', function (Request $request, Response $response, $
         ($args['ext'] == 'gif' && $post['mime'] == 'image/gif')
     ) {
         $response->getBody()->write($post['imgdata']);
+        file_put_contents("../public/image/" . $args['id'] . "." . $args['ext'], $post['imgdata']);
         return $response->withHeader('Content-Type', $post['mime']);
     }
     $response->getBody()->write('404');
