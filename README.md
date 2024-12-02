@@ -21,6 +21,8 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
 
 ## 参考資料
 
+- [達人が教えるWebパフォーマンスチューニング 〜ISUCONから学ぶ高速化の実践：書籍案内｜技術評論社](https://gihyo.jp/book/2022/978-4-297-12846-3)
+  - 特に付録A「private-isuの攻略実践」をとても参考にしています
 - [PHPerが ISUCONでやるべき事 - Speaker Deck](https://speakerdeck.com/uzulla/phperga-isucondeyarubekishi)
 - [プロファイル結果の可視化三本勝負 in PHP - Speaker Deck](https://speakerdeck.com/uzulla/purohuairujie-guo-falseke-shi-hua-san-ben-sheng-fu-in-php)
   - [GitHub - uzulla/xhprof-flamegraphs](https://github.com/uzulla/xhprof-flamegraphs)
