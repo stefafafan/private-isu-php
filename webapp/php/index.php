@@ -139,9 +139,17 @@ $container->set('helper', function ($c) {
             $options += ['all_comments' => false];
             $all_comments = $options['all_comments'];
 
+            $post_ids = array_column($results, 'id');
+            $placeholder = implode(',', array_fill(0, count($post_ids), '?'));
+            $comment_counts = $this->db()->prepare("SELECT `post_id`, COUNT(*) AS `count` FROM `comments` WHERE `post_id` IN ({$placeholder}) GROUP BY `post_id`");
+            $comment_counts->execute($post_ids);
+            $comment_counts = $comment_counts->fetchAll(PDO::FETCH_ASSOC);
+            $comment_counts = array_column($comment_counts, 'count', 'post_id');
+
             $posts = [];
             foreach ($results as $post) {
-                $post['comment_count'] = $this->fetch_first('SELECT COUNT(*) AS `count` FROM `comments` WHERE `post_id` = ?', $post['id'])['count'];
+                $post['comment_count'] = $comment_counts[$post['id']] ?? 0;
+
                 $query = 'SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC';
                 if (!$all_comments) {
                     $query .= ' LIMIT 3';
