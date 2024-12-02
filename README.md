@@ -30,3 +30,4 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
   - [GitHub - sj-i/isucon12f-phperkaigi2023-repo](https://github.com/sj-i/isucon12f-phperkaigi2023-repo)
 - [Reli を使った PHP 7.x/8.x サービスの計測｜技術ブログ｜北海道札幌市・宮城県仙台市のVR・ゲーム・システム開発 インフィニットループ](https://www.infiniteloop.co.jp/tech-blog/2023/03/profiling-php8-using-reli/)
   - [GitHub - reliforp/reli-prof](https://github.com/reliforp/reli-prof)
+- [private-isuをdockerでやってみた時のメモ](https://zenn.dev/eichisanden/scraps/7798c55153787b)
