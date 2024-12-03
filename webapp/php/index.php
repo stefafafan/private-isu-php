@@ -140,24 +140,27 @@ $container->set('helper', function ($c) {
             $all_comments = $options['all_comments'];
 
             $post_ids = array_column($results, 'id');
-            $placeholder = implode(',', array_fill(0, count($post_ids), '?'));
-            $comment_counts = $this->db()->prepare("SELECT `post_id`, COUNT(*) AS `count` FROM `comments` WHERE `post_id` IN ({$placeholder}) GROUP BY `post_id`");
-            $comment_counts->execute($post_ids);
-            $comment_counts = $comment_counts->fetchAll(PDO::FETCH_ASSOC);
-            $comment_counts = array_column($comment_counts, 'count', 'post_id');
+            $placeholders = implode(',', array_fill(0, count($post_ids), '?'));
+            $query = "SELECT * FROM `comments` WHERE `post_id` IN ($placeholders) ORDER BY `created_at` DESC";
+            $stmt = $this->db()->prepare($query);
+            $stmt->execute($post_ids);
+            $comments = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+            $grouped_comments = [];
+            foreach ($comments as $comment) {
+                $grouped_comments[$comment['post_id']][] = $comment;
+            }
 
             $posts = [];
             foreach ($results as $post) {
-                $post['comment_count'] = $comment_counts[$post['id']] ?? 0;
+                $post['comment_count'] = count($grouped_comments[$post['id']] ?? []);
 
-                $query = 'SELECT * FROM `comments` WHERE `post_id` = ? ORDER BY `created_at` DESC';
+                $post['comments'] = $grouped_comments[$post['id']] ?? [];
                 if (!$all_comments) {
-                    $query .= ' LIMIT 3';
+                    $post['comments'] = array_slice($post['comments'], 0, 3);
                 }
 
-                $ps = $this->db()->prepare($query);
-                $ps->execute([$post['id']]);
-                $comments = $ps->fetchAll(PDO::FETCH_ASSOC);
+                $comments = $post['comments'];
                 foreach ($comments as &$comment) {
                     $comment['user'] = $this->fetch_first('SELECT * FROM `users` WHERE `id` = ?', $comment['user_id']);
                 }
