@@ -1,4 +1,4 @@
-deploy: deploy-app deploy-nginx deploy-mysql
+deploy: deploy-app deploy-nginx deploy-mysql deploy-phpini
 
 deploy-app:
 	rsync -av webapp/php/ isu01:~/private_isu/webapp/php/
@@ -11,6 +11,10 @@ deploy-nginx:
 deploy-mysql:
 	rsync -av --rsync-path="sudo rsync" ./etc/mysql/mysql.conf.d/mysqld.cnf isu01:/etc/mysql/mysql.conf.d/mysqld.cnf
 	ssh isu01 "sudo systemctl restart mysql"
+
+deploy-phpini:
+	rsync -av --rsync-path="sudo rsync" ./etc/php/8.3/fpm/php.ini isu01:/etc/php/8.3/fpm/php.ini
+	ssh isu01 "sudo systemctl restart php8.3-fpm"
 
 # GitHubに貼りやすいようについでにフォーマットをMarkdownにしつつ、pbcopyでクリップボードにコピーする
 analyze-nginx:
