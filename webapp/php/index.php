@@ -151,6 +151,20 @@ $container->set('helper', function ($c) {
                 $grouped_comments[$comment['post_id']][] = $comment;
             }
 
+            $user_ids = array_column($comments, 'user_id');
+            if (count($user_ids) > 0) {
+                $user_id_placeholders = implode(',', array_fill(0, count($user_ids), '?'));
+                $user_query = "SELECT * FROM `users` WHERE `id` IN ($user_id_placeholders)";
+                $user_stmt = $this->db()->prepare($user_query);
+                $user_stmt->execute($user_ids);
+                $users = $user_stmt->fetchAll(PDO::FETCH_ASSOC);
+
+                $user_map = [];
+                foreach ($users as $user) {
+                    $user_map[$user['id']] = $user;
+                }
+            }
+
             $posts = [];
             foreach ($results as $post) {
                 $post['comment_count'] = count($grouped_comments[$post['id']] ?? []);
@@ -162,7 +176,7 @@ $container->set('helper', function ($c) {
 
                 $comments = $post['comments'];
                 foreach ($comments as &$comment) {
-                    $comment['user'] = $this->fetch_first('SELECT * FROM `users` WHERE `id` = ?', $comment['user_id']);
+                    $comment['user'] = $user_map[$comment['user_id']] ?? null;
                 }
                 unset($comment);
                 $post['comments'] = array_reverse($comments);
