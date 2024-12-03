@@ -14,6 +14,7 @@ deploy-mysql:
 
 deploy-phpini:
 	rsync -av --rsync-path="sudo rsync" ./etc/php/8.3/fpm/php.ini isu01:/etc/php/8.3/fpm/php.ini
+	rsync -av --rsync-path="sudo rsync" ./etc/php/8.3/mods-available/opcache.ini isu01:/etc/php/8.3/mods-available/opcache.ini
 	ssh isu01 "sudo systemctl restart php8.3-fpm"
 
 # GitHubに貼りやすいようについでにフォーマットをMarkdownにしつつ、pbcopyでクリップボードにコピーする
