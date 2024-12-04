@@ -1,4 +1,5 @@
 {
+    "optimize-autoloader": true,
     "require": {
         "slim/slim": "^4.7",
         "slim/php-view": "^3.1",
