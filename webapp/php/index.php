@@ -57,7 +57,8 @@ $container->set('db', function ($c) {
     return new PDO(
         "mysql:dbname={$config['db']['database']};host={$config['db']['host']};port={$config['db']['port']};charset=utf8mb4",
         $config['db']['username'],
-        $config['db']['password']
+        $config['db']['password'],
+        array(PDO::ATTR_PERSISTENT => true)
     );
 });
 
