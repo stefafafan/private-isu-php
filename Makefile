@@ -12,7 +12,12 @@ deploy-mysql:
 	rsync -av --rsync-path="sudo rsync" ./etc/mysql/mysql.conf.d/mysqld.cnf isu01:/etc/mysql/mysql.conf.d/mysqld.cnf
 	ssh isu01 "sudo systemctl restart mysql"
 
-deploy-phpini:
+deploy-phpini83:
+	rsync -av --rsync-path="sudo rsync" ./etc/php/8.3/mods-available/opcache.ini isu01:/etc/php/8.3/mods-available/opcache.ini
+	rsync -av --rsync-path="sudo rsync" ./etc/php/8.3/fpm/pool.d/www.conf isu01:/etc/php/8.3/fpm/pool.d/www.conf
+	ssh isu01 "sudo systemctl restart php8.3-fpm"
+
+deploy-phpini84:
 	rsync -av --rsync-path="sudo rsync" ./etc/php/8.4/mods-available/opcache.ini isu01:/etc/php/8.4/mods-available/opcache.ini
 	rsync -av --rsync-path="sudo rsync" ./etc/php/8.4/fpm/pool.d/www.conf isu01:/etc/php/8.4/fpm/pool.d/www.conf
 	ssh isu01 "sudo systemctl restart php8.4-fpm"
