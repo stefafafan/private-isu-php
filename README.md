@@ -34,3 +34,4 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
 - [private-isuをdockerでやってみた時のメモ](https://zenn.dev/eichisanden/scraps/7798c55153787b)
 - [RoadRunnerの世界 〜 Yet Another Alt PHP-FPM - Speaker Deck](https://speakerdeck.com/n1215/roadrunnerfalseshi-jie-yet-another-alt-php-fpm)
 - [PHP 8.4 Installation and Upgrade guide for Ubuntu and Debian • PHP.Watch](https://php.watch/articles/php-84-install-upgrade-guide-debian-ubuntu)
+- [PHP: 接続、および接続の管理 - Manual](https://www.php.net/manual/ja/pdo.connections.php)
