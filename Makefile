@@ -1,4 +1,4 @@
-deploy: deploy-app deploy-nginx deploy-mysql deploy-phpini
+deploy: deploy-app deploy-nginx deploy-mysql deploy-phpini84
 
 deploy-app:
 	rsync -av webapp/php/ isu01:~/private_isu/webapp/php/
