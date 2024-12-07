@@ -25,6 +25,10 @@ deploy-phpini84:
 deploy-limits:
 	rsync -av --rsync-path="sudo rsync" ./etc/security/limits.conf isu01:/etc/security/limits.conf
 
+deploy-sysctl:
+	rsync -av --rsync-path="sudo rsync" ./etc/sysctl.conf isu01:/etc/sysctl.conf
+	ssh isu01 "sudo sysctl -p"
+
 # GitHubに貼りやすいようについでにフォーマットをMarkdownにしつつ、pbcopyでクリップボードにコピーする
 analyze-nginx:
 	ssh isu01 "sudo cat /var/log/nginx/access.log | alp json -m '^/@.+,^/posts/\d+,^/image/.+' --sort sum -r --format markdown" | pbcopy
