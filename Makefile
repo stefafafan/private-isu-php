@@ -22,6 +22,9 @@ deploy-phpini84:
 	rsync -av --rsync-path="sudo rsync" ./etc/php/8.4/fpm/pool.d/www.conf isu01:/etc/php/8.4/fpm/pool.d/www.conf
 	ssh isu01 "sudo systemctl restart php8.4-fpm"
 
+deploy-limits:
+	rsync -av --rsync-path="sudo rsync" ./etc/security/limits.conf isu01:/etc/security/limits.conf
+
 # GitHubに貼りやすいようについでにフォーマットをMarkdownにしつつ、pbcopyでクリップボードにコピーする
 analyze-nginx:
 	ssh isu01 "sudo cat /var/log/nginx/access.log | alp json -m '^/@.+,^/posts/\d+,^/image/.+' --sort sum -r --format markdown" | pbcopy
