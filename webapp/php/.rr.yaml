@@ -1,7 +1,7 @@
 version: "3"
 
 server:
-  command: "php psr-worker.php"
+  command: "php worker.php"
 
 http:
   address: 0.0.0.0:8080

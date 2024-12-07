@@ -7,12 +7,16 @@ use Nyholm\Psr7\Factory\Psr17Factory;
 
 use Spiral\RoadRunner\Worker;
 use Spiral\RoadRunner\Http\PSR7Worker;
+use App\Dependencies;
+
+$container = Dependencies::initializeContainer();
+$container = Dependencies::setupRoutes($container);
 
 $worker = Worker::create();
-
 $factory = new Psr17Factory();
-
 $psr7 = new PSR7Worker($worker, $factory, $factory, $factory);
+
+$app = $container->get('app');
 
 while (true) {
     try {
@@ -26,9 +30,10 @@ while (true) {
     }
 
     try {
-        $psr7->respond(new Response(200, [], 'Hello RoadRunner!'));
+        $response = $app->handle($request);
+        $psr7->respond($response);
     } catch (\Throwable $e) {
-        $psr7->respond(new Response(500, [], 'Something Went Wrong!'));
+        $psr7->respond(new Response(500, [], (string)$e));
         $psr7->getWorker()->error((string)$e);
     }
 }
