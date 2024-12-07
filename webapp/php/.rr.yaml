@@ -5,8 +5,11 @@ server:
 
 http:
   address: 0.0.0.0:8080
+  pool:
+    num_workers: 1
+  max_request_size: 256
 
-# do not use development mode in production
 logs:
+  mode: production
   level: debug
-  mode: development
+  output: /var/log/roadrunner.log
