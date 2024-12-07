@@ -10,8 +10,6 @@ use Spiral\RoadRunner\Worker;
 use Spiral\RoadRunner\Http\PSR7Worker;
 use App\Dependencies;
 
-session_start();
-
 $container = Dependencies::initializeContainer();
 $container = Dependencies::setupRoutes($container);
 
@@ -28,6 +26,7 @@ while (true) {
             break;
         }
     } catch (\Throwable $e) {
+        error_log('Error waiting for request: ' . $e->getMessage());
         $psr7->respond(new Response(400));
         continue;
     }
@@ -36,6 +35,7 @@ while (true) {
         $response = $app->handle($request);
         $psr7->respond($response);
     } catch (\Throwable $e) {
+        error_log('Error handling request: ' . $e->getMessage());
         $psr7->respond(new Response(500, [], (string)$e));
         $psr7->getWorker()->error((string)$e);
     }

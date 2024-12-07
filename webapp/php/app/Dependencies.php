@@ -188,6 +188,8 @@ class Dependencies
         AppFactory::setContainer($container);
         $app = AppFactory::create();
 
+        $app->addMiddleware(new SessionMiddleware());
+
         $app->get('/initialize', function (Request $request, Response $response) use ($container) {
             $container->get('helper')->db_initialize();
             return $response;
