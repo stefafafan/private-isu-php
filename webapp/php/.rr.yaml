@@ -1,0 +1,15 @@
+version: "3"
+
+server:
+  command: "php worker.php"
+
+http:
+  address: 0.0.0.0:8080
+  pool:
+    num_workers: 1
+  max_request_size: 256
+
+logs:
+  mode: production
+  level: debug
+  output: /var/log/roadrunner.log
