@@ -55,7 +55,7 @@ class Dependencies
     public static function setupRoutes($container): \DI\Container
     {
         $container->set('view', function ($c) {
-            return new class(__DIR__ . '/views/') extends \Slim\Views\PhpRenderer {
+            return new class(dirname(__DIR__) . '/views/') extends \Slim\Views\PhpRenderer {
                 public function render(\Psr\Http\Message\ResponseInterface $response, string $template, array $data = []): ResponseInterface
                 {
                     $data += ['view' => $template];

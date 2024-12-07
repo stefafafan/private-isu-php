@@ -9,6 +9,8 @@ use Spiral\RoadRunner\Worker;
 use Spiral\RoadRunner\Http\PSR7Worker;
 use App\Dependencies;
 
+session_start();
+
 $container = Dependencies::initializeContainer();
 $container = Dependencies::setupRoutes($container);
 
