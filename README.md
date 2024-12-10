@@ -1,30 +1,24 @@
 # private-isu-php
 
-[catatsuy/private-isu](https://github.com/catatsuy/private-isu) をPHPで解いた時のログです。
+このリポジトリは、[catatsuy/private-isu](https://github.com/catatsuy/private-isu)をPHPで解いた際のログをまとめたものです。
 
 ## 環境
 
-README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`)。
+競技者用およびベンチマーカー用のインスタンスには、以下のAMIを使用しています。
 
-ベンチマーカーインスタンスも同様 (`x86_64`, `c7a.xlarge`)。
+- **競技者用インスタンス**: Ubuntu 24.04 (x86_64, c7a.large)
+- **ベンチマーカー用インスタンス**: Ubuntu 24.04 (x86_64, c7a.xlarge)
 
 ## 構成
 
-- `docs/` 配下に作業ログなどを書きます
-  - [docs/点数ログ](./docs/点数ログ.md)
-  - [docs/作業詳細ログ](./docs/作業詳細ログ.md)
-
-## やりたいことメモ
-- [x] 他言語と同じような改善をする
-- [x] JIT有効化
-- [x] PHP 8.4 へバージョンアップ
-- [x] あらゆるログ・使っていないサービスを切る
-- [ ] <s>FPMやめて、RoadRunnerへ移行する</s> →一旦あきらめ (https://github.com/stefafafan/private-isu-php/pull/1)
+- `docs/` ディレクトリに作業ログなどを保存しています。
+  - [点数ログ](docs/点数ログ)
+  - [作業詳細ログ](docs/作業詳細ログ)
 
 ## 参考資料
 
 - [達人が教えるWebパフォーマンスチューニング 〜ISUCONから学ぶ高速化の実践：書籍案内｜技術評論社](https://gihyo.jp/book/2022/978-4-297-12846-3)
-  - 特に付録A「private-isuの攻略実践」をとても参考にしています
+  - 特に付録A「private-isuの攻略実践」を参考にしています
 - [PHPerが ISUCONでやるべき事 - Speaker Deck](https://speakerdeck.com/uzulla/phperga-isucondeyarubekishi)
 - [プロファイル結果の可視化三本勝負 in PHP - Speaker Deck](https://speakerdeck.com/uzulla/purohuairujie-guo-falseke-shi-hua-san-ben-sheng-fu-in-php)
   - [GitHub - uzulla/xhprof-flamegraphs](https://github.com/uzulla/xhprof-flamegraphs)
@@ -37,3 +31,5 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
 - [PHP 8.4 Installation and Upgrade guide for Ubuntu and Debian • PHP.Watch](https://php.watch/articles/php-84-install-upgrade-guide-debian-ubuntu)
 - [PHP: 接続、および接続の管理 - Manual](https://www.php.net/manual/ja/pdo.connections.php)
 - [MySQL :: MySQL 9.1 Reference Manual :: 2.5.2 Installing MySQL on Linux Using the MySQL APT Repository](https://dev.mysql.com/doc/refman/9.1/en/linux-installation-apt-repo.html)
+
+これらの資料を参考に、PHPでの実装やパフォーマンスチューニングを行っています。
