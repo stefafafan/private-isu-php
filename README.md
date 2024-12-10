@@ -38,3 +38,4 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
 - [RoadRunnerの世界 〜 Yet Another Alt PHP-FPM - Speaker Deck](https://speakerdeck.com/n1215/roadrunnerfalseshi-jie-yet-another-alt-php-fpm)
 - [PHP 8.4 Installation and Upgrade guide for Ubuntu and Debian • PHP.Watch](https://php.watch/articles/php-84-install-upgrade-guide-debian-ubuntu)
 - [PHP: 接続、および接続の管理 - Manual](https://www.php.net/manual/ja/pdo.connections.php)
+- [MySQL :: MySQL 9.1 Reference Manual :: 2.5.2 Installing MySQL on Linux Using the MySQL APT Repository](https://dev.mysql.com/doc/refman/9.1/en/linux-installation-apt-repo.html)
