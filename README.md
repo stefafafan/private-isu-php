@@ -18,10 +18,8 @@ README記載の競技者用 (Ubuntu 24.04)のAMIを利用 (`x86_64`, `c7a.large`
 - [x] 他言語と同じような改善をする
 - [x] JIT有効化
 - [x] PHP 8.4 へバージョンアップ
-- [ ] FPMやめて、RoadRunnerへ移行する
-- [ ] プリロード
-- [ ] 何らかのキャッシュ機構を検討
-- [ ] あらゆるログ・使っていないサービスを切る
+- [x] あらゆるログ・使っていないサービスを切る
+- [ ] <s>FPMやめて、RoadRunnerへ移行する</s> →一旦あきらめ (https://github.com/stefafafan/private-isu-php/pull/1)
 
 ## 参考資料
 
